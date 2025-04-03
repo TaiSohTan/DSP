@@ -1,27 +1,26 @@
 FROM python:3.10-slim
 
-# Set the environment variables
-ENV PYTHONUNBUFFERED=1 \
-  PYTHONDONTWRITEBYTECODE=1
-
-# Set the working directory
 WORKDIR /app
 
-# Install the dependencies
-COPY requirements.txt /app/
-RUN pip install --upgrade pip && \
-  pip install -r requirements.txt
+# Install system dependencies including Solidity compiler
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    curl \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g solc@0.8.19
 
-# Copy the project
+# Install Python dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project
 COPY . /app/
 
-# Copy the entrypoint script to the image
+# Run entrypoint script
 COPY entrypoint.sh /app/
-# Make the entrypoint script executable
-RUN chmod +x ./entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Set the port
-EXPOSE 8000
-
-# Entrypoint script
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]

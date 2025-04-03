@@ -1,15 +1,31 @@
-#!/bin/sh
+#!/bin/bash
 
-echo "Waiting for Postgres Database Service to start..."
-# Control startup and shutdown order in Compose
-# ...https://docs.docker.com/compose/startup-order/
-# Script from ./wait-for is from:
-#...https://github.com/vishnubob/wait-for-it/blob/master/wait-for-it.sh
-./wait-for "$DB_HOST":"$DB_PORT"
+# Wait for postgres to be ready
+echo "Waiting for PostgreSQL..."
+python -m wait_for $DB_HOST $DB_PORT
+python -m wait_for $AUTH_DB_HOST $AUTH_DB_PORT
 
-python manage.py makemigrations
-python manage.py migrate
+# Apply database migrations
+echo "Applying migrations..."
+python manage.py migrate --noinput
 
-# Explanation for why we should run on 0.0.0.0 instead of 127.0.0.1 as default
-# ...https://itecnote.com/tecnote/docker-app-server-ip-address-127-0-0-1-difference-of-0-0-0-0-ip/
-python manage.py runserver 0.0.0.0:8000
+# Compile smart contract
+echo "Compiling smart contract..."
+mkdir -p blockchain/contracts/compiled
+python blockchain/scripts/compile_contract.py
+
+# Populate auth database
+echo "Populating authentication database..."
+python manage.py populate_auth_db --count 50
+
+# Create superuser if needed
+if [ "$DJANGO_SUPERUSER_EMAIL" ]; then
+    echo "Creating superuser..."
+    python manage.py createsuperuser \
+        --noinput \
+        --email $DJANGO_SUPERUSER_EMAIL
+fi
+
+# Start server
+echo "Starting server..."
+exec "$@"

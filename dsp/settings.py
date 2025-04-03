@@ -41,13 +41,17 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'api',
     'rest_framework',
-    'rest_framrwork_simplejwt',
+    'rest_framework_simplejwt',
     'djoser',
+    'verification',
+    'blockchain',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',  # CORS middleware
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -87,8 +91,19 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD'),
         'HOST': os.getenv('DB_HOST'),
         'PORT': os.getenv('DB_PORT','5432'),
-    }
+    },
+    'auth_db': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('AUTH_DB_NAME', 'auth_db'),
+        'USER': os.getenv('AUTH_DB_USER', os.getenv('DB_USER')),
+        'PASSWORD': os.getenv('AUTH_DB_PASSWORD', os.getenv('DB_PASSWORD')),
+        'HOST': os.getenv('AUTH_DB_HOST', os.getenv('DB_HOST')),
+        'PORT': os.getenv('AUTH_DB_PORT', os.getenv('DB_PORT', '5432')),
+    },
 }
+
+# Database routers
+DATABASE_ROUTERS = ['dsp.routers.AuthRouter']
 
 
 # Password validation
@@ -109,6 +124,10 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Custom User Model
+AUTH_USER_MODEL = 'api.User'
+
+# REST Framework settings
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -116,13 +135,43 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 10,
 }
 
-SIMPLE_JWT ={
+# JWT Settings
+SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-    'AUTH_HEADER_TYPES' : ('Bearer')
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'BLACKLIST_AFTER_ROTATION': True,
 }
+
+# CORS settings
+CORS_ALLOW_ALL_ORIGINS = DEBUG  # In production, set to False and use CORS_ALLOWED_ORIGINS
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3000',  # Frontend development server
+]
+
+# Email settings for OTP
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@evoting.com')
+
+# Cache settings for OTP storage
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    }
+}
+
+# Ethereum blockchain settings
+ETHEREUM_NODE_URL = os.getenv('ETHEREUM_NODE_URL', 'http://localhost:8545')
+ADMIN_WALLET_PRIVATE_KEY = os.getenv('ADMIN_WALLET_PRIVATE_KEY', '')
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/

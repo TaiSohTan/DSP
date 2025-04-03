@@ -1,34 +1,71 @@
-services:
-  api:
-    image: dsp:1.1
-    command:
-      - python manage.py makemigrations
-      - python manage.py migrate 
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    volumes:
-      - ./:/app
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    depends_on:
-      - db
+version: '3.8'
 
+services:
   db:
     image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=evoting
     ports:
       - "5432:5432"
-    restart: unless-stopped
-    volumes:
-      - dsp:/var/lib/postgresql/data
-    
-volumes:
-  dsp:
   
+  auth_db:
+    image: postgres:15
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=auth_db
+    ports:
+      - "5433:5432"
+  
+  ganache:
+    image: trufflesuite/ganache:latest
+    ports:
+      - "8545:8545"
+    command:
+      - --deterministic
+      - --chain.networkId=1337
+      - --chain.chainId=1337
+      - --miner.blockTime=0
+      - --miner.instamine=eager
+      - --wallet.defaultBalance=100
+      - --wallet.numberOfAccounts=10
+      - --server.host=0.0.0.0
+      - --database.dbPath=/ganache/data
+    volumes:
+      - ganache_data:/ganache/data
+
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - auth_db
+      - ganache
+    environment:
+      - DB_NAME=evoting
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=db
+      - DB_PORT=5432
+      - AUTH_DB_NAME=auth_db
+      - AUTH_DB_USER=postgres
+      - AUTH_DB_PASSWORD=postgres
+      - AUTH_DB_HOST=auth_db
+      - AUTH_DB_PORT=5432
+      - ETHEREUM_NODE_URL=http://ganache:8545
+      - DEBUG=1
+
+volumes:
+  postgres_data:
+  auth_postgres_data:
+  ganache_data:
