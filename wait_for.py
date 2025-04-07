@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """
 Wait for a port to be available.
-Used to wait for services like databases to be ready before proceeding.
 """
 import socket
 import time
@@ -12,10 +11,11 @@ def is_port_open(host, port, timeout=5.0):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
+        result = sock.connect_ex((host, int(port)))
         sock.close()
         return result == 0
-    except:
+    except Exception as e:
+        print(f"Error checking port: {e}")
         return False
 
 def wait_for_port(host, port, retries=60, delay=1.0):
@@ -39,7 +39,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     host = sys.argv[1]
-    port = int(sys.argv[2])
+    port = sys.argv[2]
     retries = int(sys.argv[3]) if len(sys.argv) > 3 else 60
     delay = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
     

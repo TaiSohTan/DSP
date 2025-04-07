@@ -141,7 +141,7 @@ class Election(models.Model):
     end_date = models.DateTimeField()
     contract_address = models.CharField(max_length=42, blank=True, null=True)  # Ethereum contract address
     is_active = models.BooleanField(default=False)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_elections')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_created_elections')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -160,7 +160,7 @@ class Candidate(models.Model):
 
 class Vote(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    voter = models.ForeignKey(User, on_delete=models.PROTECT, related_name='votes')
+    voter = models.ForeignKey(User, on_delete=models.PROTECT, related_name='api_votes')
     election = models.ForeignKey(Election, on_delete=models.CASCADE, related_name='votes')
     candidate = models.ForeignKey(Candidate, on_delete=models.CASCADE, related_name='votes')
     timestamp = models.DateTimeField(auto_now_add=True)

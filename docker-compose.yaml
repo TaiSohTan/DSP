@@ -1,27 +1,31 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15
     volumes:
       - postgres_data:/var/lib/postgresql/data/
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=evoting
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
+    restart: unless-stopped 
+    env_file:
+      - .env
   
   auth_db:
     image: postgres:15
     volumes:
       - auth_postgres_data:/var/lib/postgresql/data/
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=auth_db
+      - POSTGRES_USER=${DB_AUTH_USER}
+      - POSTGRES_PASSWORD=${DB_AUTH_PASSWORD}
+      - POSTGRES_DB=${DB_AUTH_NAME}
     ports:
       - "5433:5432"
+    env_file:
+      - .env
+    restart: unless-stopped
   
   ganache:
     image: trufflesuite/ganache:latest
@@ -34,7 +38,7 @@ services:
       - --miner.blockTime=0
       - --miner.instamine=eager
       - --wallet.defaultBalance=100
-      - --wallet.numberOfAccounts=10
+      - --accounts=10
       - --server.host=0.0.0.0
       - --database.dbPath=/ganache/data
     volumes:
@@ -52,18 +56,20 @@ services:
       - auth_db
       - ganache
     environment:
-      - DB_NAME=evoting
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_HOST=db
-      - DB_PORT=5432
-      - AUTH_DB_NAME=auth_db
-      - AUTH_DB_USER=postgres
-      - AUTH_DB_PASSWORD=postgres
-      - AUTH_DB_HOST=auth_db
-      - AUTH_DB_PORT=5432
-      - ETHEREUM_NODE_URL=http://ganache:8545
-      - DEBUG=1
+    - DB_HOST=db
+    - DB_PORT=5432
+    - DB_USER=${DB_USER}
+    - DB_PASSWORD=${DB_PASSWORD}
+    - DB_NAME=${DB_NAME}
+    - AUTH_DB_HOST=auth_db
+    - AUTH_DB_PORT=5432
+    - AUTH_DB_USER=${DB_AUTH_USER}
+    - AUTH_DB_PASSWORD=${DB_AUTH_PASSWORD}
+    - AUTH_DB_NAME=${DB_AUTH_NAME}
+    - ETHEREUM_NODE_URL=http://ganache:8545
+    - DEBUG=1
+    env_file:
+      - .env 
 
 volumes:
   postgres_data:

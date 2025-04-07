@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import EthereumWallet, Election, Candidate, Vote
+from .models import EthereumWallet, Election, Vote
 
 @admin.register(EthereumWallet)
 class EthereumWalletAdmin(admin.ModelAdmin):
@@ -28,14 +28,6 @@ class ElectionAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at')
         }),
     )
-
-
-@admin.register(Candidate)
-class CandidateAdmin(admin.ModelAdmin):
-    list_display = ('name', 'election', 'party', 'candidate_id')
-    list_filter = ('election', 'party')
-    search_fields = ('name', 'party', 'bio')
-    readonly_fields = ('id',)
 
 
 @admin.register(Vote)
