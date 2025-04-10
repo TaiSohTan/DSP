@@ -8,6 +8,7 @@ from .views import (
     SendPhoneOTPView,
     SendEmailOTPView,
     VerifyPhoneOTPView,
+    CompleteRegistrationView,  
 )
 from .views_election import (
     ElectionViewSet,
@@ -24,6 +25,7 @@ router.register(r'votes', VoteViewSet)
 urlpatterns = [
     # User authentication & registration
     path('register/', UserRegistrationView.as_view(), name='register'),
+    path('complete-registration/', CompleteRegistrationView.as_view(), name='complete-registration'),  # Added new endpoint
     path('login/', UserLoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('profile/', UserProfileView.as_view(), name='profile'),

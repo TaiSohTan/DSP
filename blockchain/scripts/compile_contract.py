@@ -50,12 +50,18 @@ def compile_contract():
         if not isinstance(result.stdout, str):
             raise ValueError("Compiler output is not a string")
 
-        # Parse the JSON output
+        # Print raw output for debugging
+        print("Raw compiler output:", result.stdout)
+
+        # Debugging: Ensure the output is a dictionary
         try:
             output = json.loads(result.stdout)
             if not isinstance(output, dict):
-                raise ValueError("Compiler output JSON is not a dictionary")
-            
+                raise ValueError(f"Unexpected output type: {type(output)}. Expected a dictionary.")
+
+            # Debugging: Print the parsed JSON structure
+            print("Parsed JSON structure:", json.dumps(output, indent=2))
+
             # Extract the ABI and bytecode for the EVoting contract
             contract_key = None
             for key in output.get('contracts', {}).keys():
@@ -67,7 +73,7 @@ def compile_contract():
                 raise ValueError("EVoting contract not found in compiler output")
 
             contract_data = output['contracts'][contract_key]
-            abi = json.loads(contract_data['abi'])
+            abi = contract_data['abi']
             bytecode = '0x' + contract_data['bin']
 
             # Save to file

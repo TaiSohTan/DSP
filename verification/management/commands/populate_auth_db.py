@@ -10,13 +10,47 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--count', type=int, default=50, help='Number of sample users to generate')
-
     def handle(self, *args, **options):
         count = options['count']
         self.stdout.write(self.style.SUCCESS(f'Generating {count} verified users...'))
         
-        # Delete existing users if any
-        VerificationUser.objects.all().delete()
+        # Check if the table exists in the database before trying to delete
+        from django.db import connections
+        cursor = connections['auth_db'].cursor()
+        
+        try:
+            # Try to create the table if it doesn't exist
+            self.stdout.write(self.style.WARNING('Ensuring verification_users table exists...'))
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS verification_users (
+                    id UUID PRIMARY KEY,
+                    full_name VARCHAR(100) NOT NULL,
+                    date_of_birth DATE NOT NULL,
+                    government_id VARCHAR(20) UNIQUE NOT NULL,
+                    government_id_type VARCHAR(20) NOT NULL,
+                    address TEXT NOT NULL,
+                    postal_code VARCHAR(15) NOT NULL,
+                    city VARCHAR(50) NOT NULL,
+                    country VARCHAR(50) NOT NULL,
+                    email VARCHAR(254) UNIQUE NOT NULL,
+                    phone_number VARCHAR(15) UNIQUE NOT NULL,
+                    is_eligible_voter BOOLEAN NOT NULL DEFAULT TRUE,
+                    verification_date TIMESTAMP WITH TIME ZONE NOT NULL
+                )
+            """)
+            connections['auth_db'].commit()
+            
+            self.stdout.write(self.style.SUCCESS('Table verified/created successfully'))
+            
+            # Now try to delete existing records
+            self.stdout.write(self.style.WARNING('Clearing existing records...'))
+            cursor.execute('DELETE FROM verification_users')
+            connections['auth_db'].commit()
+            self.stdout.write(self.style.SUCCESS('Existing records cleared'))
+            
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Error setting up database table: {e}'))
+            self.stdout.write(self.style.WARNING('Continuing with record creation...'))
         
         # Generate sample data
         government_id_types = ['PASSPORT', 'NATIONAL_ID', 'DRIVERS_LICENSE']
@@ -62,7 +96,7 @@ class Command(BaseCommand):
                 # Generate a phone number
                 phone = f"+{random.randint(1, 99)}{random.randint(1000000000, 9999999999)}"
                 
-                # Create the verified user
+                # Create the verified user                
                 user = VerificationUser(
                     id=uuid.uuid4(),
                     full_name=full_name,
@@ -78,7 +112,8 @@ class Command(BaseCommand):
                     is_eligible_voter=random.random() > 0.05,  # 5% chance of not being eligible
                     verification_date=timezone.now() - timedelta(days=random.randint(1, 365))
                 )
-                user.save()
+                # Save to the auth_db database
+                user.save(using='auth_db')
                 users_created += 1
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f'Error creating user: {e}'))

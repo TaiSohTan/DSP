@@ -9,11 +9,11 @@ import secrets
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
     confirm_password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
-    phone_otp = serializers.CharField(write_only=True, required=True)
+    # Removed phone_otp field as it will be handled separately
     
     class Meta:
         model = User
-        fields = ['email', 'full_name', 'government_id', 'phone_number', 'password', 'confirm_password', 'phone_otp']
+        fields = ['email', 'full_name', 'government_id', 'phone_number', 'password', 'confirm_password']
         extra_kwargs = {
             'email': {'required': True},
             'full_name': {'required': True},
@@ -46,21 +46,20 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return attrs
     
     def create(self, validated_data):
-        # Remove confirm_password and phone_otp from validated data
+        # Remove confirm_password from validated data
         validated_data.pop('confirm_password')
-        validated_data.pop('phone_otp')
         
-        # Create the user
+        # Create the user - but set is_verified to False initially
         user = User.objects.create_user(
             email=validated_data['email'],
             government_id=validated_data['government_id'],
             full_name=validated_data['full_name'],
             phone_number=validated_data['phone_number'],
-            password=validated_data['password']
+            password=validated_data['password'],
+            is_verified=False  # User is not verified until OTP confirmation
         )
         
         # Generate Ethereum wallet for the user
-        # In a real application, this would be encrypted with the user's password
         private_key_hex = secrets.token_hex(32)
         account = Account.from_key(private_key_hex)
         
@@ -69,17 +68,21 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         user.ethereum_private_key = private_key_hex
         user.save()
         
-        # Create UserProfile
+        # Create UserProfile with is_verified and is_eligible_to_vote set to False initially
         profile = UserProfile.objects.create(
             user=user,
             government_id=validated_data['government_id'],
-            government_id_type='NATIONAL_ID',  # This would be provided in the form
+            government_id_type='NATIONAL_ID',
             phone_number=validated_data['phone_number'],
-            is_verified=True,
-            is_eligible_to_vote=True
+            is_verified=False,
+            is_eligible_to_vote=False
         )
         
         return user
+
+class OTPVerificationSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(required=True)
+    otp = serializers.CharField(required=True)
 
 class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)

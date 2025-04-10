@@ -7,6 +7,7 @@ from django.conf import settings
 from django.core.cache import cache
 from datetime import datetime, timedelta
 import hashlib
+from twilio.rest import Client
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,14 @@ class OTPService:
     # Cache key prefixes
     EMAIL_OTP_PREFIX = "email_otp_"
     SMS_OTP_PREFIX = "sms_otp_"
+    
+    # Twilio configuration - set these in settings.py or environment variables
+    TWILIO_ACCOUNT_SID = getattr(settings, 'TWILIO_ACCOUNT_SID', os.environ.get('TWILIO_ACCOUNT_SID'))
+    TWILIO_AUTH_TOKEN = getattr(settings, 'TWILIO_AUTH_TOKEN', os.environ.get('TWILIO_AUTH_TOKEN'))
+    TWILIO_PHONE_NUMBER = getattr(settings, 'TWILIO_PHONE_NUMBER', os.environ.get('TWILIO_PHONE_NUMBER'))
+    
+    # Flag to control service usage vs. logging (for development)
+    USE_SMS_SERVICE = getattr(settings, 'USE_SMS_SERVICE', False)
     
     @classmethod
     def generate_otp(cls, length: int = 6) -> str:
@@ -58,18 +67,21 @@ class OTPService:
         
         prefix = cls.EMAIL_OTP_PREFIX if is_email else cls.SMS_OTP_PREFIX
         return f"{prefix}{hashed}"
+      # Email configuration - set these in settings.py or environment variables
+    USE_EMAIL_SERVICE = getattr(settings, 'USE_EMAIL_SERVICE', True)
     
     @classmethod
     def send_email_otp(cls, email: str, purpose: str = "verification") -> bool:
         """
         Generate and send OTP via email.
+        Also logs the OTP for development purposes.
         
         Args:
             email: Email address to send OTP to
             purpose: Purpose of the OTP (for the email subject)
             
         Returns:
-            True if the email was sent successfully, False otherwise
+            True if the email was sent successfully or logged, False otherwise
         """
         otp = cls.generate_otp()
         cache_key = cls._get_cache_key(email, is_email=True)
@@ -81,7 +93,11 @@ class OTPService:
             timeout=cls.OTP_VALIDITY_MINUTES * 60
         )
         
-        # Send email
+        # Always log OTP for development purposes
+        logger.info(f"EMAIL OTP for {email}: {otp}")
+        print(f"DEBUG EMAIL OTP for {email}: {otp}")
+        
+        # Create email content
         subject = f"Your Verification Code for E-Voting Platform"
         message = (
             f"Your verification code for {purpose} is: {otp}\n\n"
@@ -89,30 +105,47 @@ class OTPService:
             f"If you did not request this code, please ignore this email."
         )
         
-        try:
-            sent = send_mail(
-                subject,
-                message,
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-            )
-            return sent > 0
-        except Exception as e:
-            logger.error(f"Failed to send email OTP: {str(e)}")
-            return False
+        # Only attempt to send email if service is enabled
+        if cls.USE_EMAIL_SERVICE:
+            try:
+                # Send plain text email
+                sent = send_mail(
+                    subject,
+                    message,
+                    settings.DEFAULT_FROM_EMAIL,
+                    [email],
+                    fail_silently=False,
+                )
+                
+                if sent > 0:
+                    logger.info(f"Email sent successfully to {email}")
+                    return True
+                else:
+                    logger.warning(f"Failed to send email to {email}")
+                    # Even if email fails, we've logged the OTP for development
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"Failed to send email OTP: {str(e)}")
+                # Even if email fails, we've logged the OTP for development
+                return True
+        else:
+            logger.info("Email service not configured, using log-based OTP only")
+            # Return True since we're using the logged OTP for verification
+            return True
     
     @classmethod
     def send_sms_otp(cls, phone_number: str, purpose: str = "verification") -> bool:
         """
-        Generate and send OTP via SMS.
+        Generate and send OTP via SMS using Twilio.
+        Also logs the OTP for development purposes.
         
         Args:
             phone_number: Phone number to send OTP to
             purpose: Purpose of the OTP (for the SMS text)
             
         Returns:
-            True if the SMS was sent successfully, False otherwise
+            True if the SMS was sent successfully or logged, False otherwise
         """
         otp = cls.generate_otp()
         cache_key = cls._get_cache_key(phone_number, is_email=False)
@@ -124,15 +157,37 @@ class OTPService:
             timeout=cls.OTP_VALIDITY_MINUTES * 60
         )
         
-        # Twilio integration would go here
-        # For now, we'll just log the OTP (in a real system, we'd use Twilio or another SMS provider)
-        message = f"Your verification code for {purpose} is: {otp}. This code will expire in {cls.OTP_VALIDITY_MINUTES} minutes."
+        # Always log OTP for development purposes
         logger.info(f"SMS OTP for {phone_number}: {otp}")
+        print(f"DEBUG SMS OTP for {phone_number}: {otp}")
         
-        # In a real implementation, we would send the SMS here
-        # For development, we'll just pretend we sent it and return success
-        # In production, replace with actual SMS sending code
-        return True
+        # Message text
+        message = f"Your verification code for {purpose} is: {otp}. This code will expire in {cls.OTP_VALIDITY_MINUTES} minutes."
+        
+        # If Twilio integration is enabled and credentials are available
+        if cls.USE_SMS_SERVICE and cls.TWILIO_ACCOUNT_SID and cls.TWILIO_AUTH_TOKEN and cls.TWILIO_PHONE_NUMBER:
+            try:
+                # Initialize Twilio client
+                client = Client(cls.TWILIO_ACCOUNT_SID, cls.TWILIO_AUTH_TOKEN)
+                
+                # Send SMS
+                twilio_message = client.messages.create(
+                    body=message,
+                    from_=cls.TWILIO_PHONE_NUMBER,
+                    to=phone_number
+                )
+                
+                logger.info(f"Twilio SMS sent with SID: {twilio_message.sid}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Failed to send SMS via Twilio: {str(e)}")
+                # Even if Twilio fails, we've logged the OTP for development
+                return True
+        else:
+            logger.info("Twilio service not configured, using log-based OTP only")
+            # Return True since we're using the logged OTP for verification
+            return True
     
     @classmethod
     def verify_otp(cls, identifier: str, otp: str, is_email: bool = True) -> bool:

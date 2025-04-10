@@ -8,7 +8,8 @@ from .models import User, UserProfile
 from .serializers.user_serializers import (
     UserRegistrationSerializer,
     UserLoginSerializer,
-    UserProfileSerializer
+    UserProfileSerializer,
+    OTPVerificationSerializer
 )
 from .services.otp_service import OTPService
 from django.utils import timezone
@@ -16,9 +17,8 @@ from datetime import timedelta
 
 class UserRegistrationView(generics.CreateAPIView):
     """
-    API view for user registration.
-    Handles user creation, verification against the auth database,
-    and OTP verification.
+    API view for user registration - first step.
+    Collects user details and creates an unverified user.
     """
     permission_classes = [permissions.AllowAny]
     serializer_class = UserRegistrationSerializer
@@ -26,25 +26,61 @@ class UserRegistrationView(generics.CreateAPIView):
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            # Verify phone OTP
-            phone_otp = serializer.validated_data.get('phone_otp')
-            if not OTPService.verify_otp(
-                serializer.validated_data.get('phone_number'), 
-                phone_otp, 
-                is_email=False
-            ):
-                return Response(
-                    {'error': 'Invalid or expired OTP.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Create user
+            # Create unverified user
             user = serializer.save()
+            
+            # Automatically send OTP to user's phone
+            phone_number = serializer.validated_data.get('phone_number')
+            OTPService.send_sms_otp(phone_number, purpose="registration")
+            
+            return Response({
+                'message': 'User registration initiated successfully. Please verify your phone number with the OTP sent.',
+                'user_id': user.id,
+                'phone_number': phone_number
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CompleteRegistrationView(APIView):
+    """
+    API view for completing user registration - second step.
+    Verifies the OTP and activates the user account.
+    """
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request, *args, **kwargs):
+        serializer = OTPVerificationSerializer(data=request.data)
+        if serializer.is_valid():
+            phone_number = serializer.validated_data.get('phone_number')
+            otp = serializer.validated_data.get('otp')
+            
+            # Verify OTP
+            if not OTPService.verify_otp(phone_number, otp, is_email=False):
+                return Response({
+                    'error': 'Invalid or expired OTP.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Find user by phone number
+            try:
+                user = User.objects.get(phone_number=phone_number, is_verified=False)
+            except User.DoesNotExist:
+                return Response({
+                    'error': 'User not found or already verified.'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Update user and profile to verified status
+            user.is_verified = True
+            user.save()
+            
+            profile = UserProfile.objects.get(user=user)
+            profile.is_verified = True
+            profile.is_eligible_to_vote = True
+            profile.save()
             
             # Generate JWT tokens
             refresh = RefreshToken.for_user(user)
             
             return Response({
+                'message': 'Registration completed successfully.',
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
                 'user': {
@@ -52,7 +88,7 @@ class UserRegistrationView(generics.CreateAPIView):
                     'email': user.email,
                     'full_name': user.full_name,
                 }
-            }, status=status.HTTP_201_CREATED)
+            })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class UserLoginView(APIView):

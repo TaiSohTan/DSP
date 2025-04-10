@@ -94,11 +94,11 @@ DATABASES = {
     },
     'auth_db': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('AUTH_DB_NAME', 'auth_db'),
-        'USER': os.getenv('AUTH_DB_USER', os.getenv('DB_USER')),
-        'PASSWORD': os.getenv('AUTH_DB_PASSWORD', os.getenv('DB_PASSWORD')),
-        'HOST': os.getenv('AUTH_DB_HOST', os.getenv('DB_HOST')),
-        'PORT': os.getenv('AUTH_DB_PORT', os.getenv('DB_PORT', '5432')),
+        'NAME': os.getenv('DB_AUTH_NAME', 'auth_db'),
+        'USER': os.getenv('DB_AUTH_USER' ),
+        'PASSWORD': os.getenv('DB_AUTH_PASSWORD'),
+        'HOST': os.getenv('DB_AUTH_HOST'),
+        'PORT': os.getenv('DB_AUTH_PORT'),
     },
 }
 
@@ -155,12 +155,20 @@ CORS_ALLOWED_ORIGINS = [
 
 # Email settings for OTP
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
+# To use actual SMTP in production, change to: 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@evoting.com')
+USE_EMAIL_SERVICE = os.getenv('USE_EMAIL_SERVICE', 'True') == 'True'  # Set to False to disable email service
+
+# Twilio settings for SMS OTP
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
+USE_SMS_SERVICE = os.getenv('USE_SMS_SERVICE', 'False') == 'True'  # Set to True to use actual Twilio service
 
 # Cache settings for OTP storage
 CACHES = {

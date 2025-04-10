@@ -16,5 +16,6 @@ mkdir -p blockchain/contracts/compiled
 python blockchain/scripts/compile_contract.py || echo "Warning: Contract compilation failed, continuing without it"
 
 # Start server
-echo "Starting server..."
+python manage.py runserver 0.0.0.0:8000
+echo "Starting server... at http://127.0.0.1:8000"
 exec "$@"
