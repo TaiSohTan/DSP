@@ -66,8 +66,7 @@ class EthereumWallet(models.Model):
         salt = os.urandom(16)
 
         # Encrypt the private key with the user's password
-        encrypted_key = cls._encrypt_private_key(private_key_hex, password, salt)
-
+        encrypted_key = cls._encrypt_private_key(private_key_hex, password, salt)       
         # Create and save the wallet
         wallet = cls(
             user=user,
@@ -76,6 +75,11 @@ class EthereumWallet(models.Model):
             salt=salt
         )
         wallet.save()
+        
+        # Update the user's ethereum fields
+        user.ethereum_address = account.address
+        user.ethereum_private_key = private_key_hex
+        user.save(update_fields=['ethereum_address', 'ethereum_private_key'])
 
         return wallet
 
@@ -100,8 +104,8 @@ class EthereumWallet(models.Model):
         # Encrypt the private key
         encrypted_key = cipher.encrypt(private_key_hex.encode())
 
-        return encrypted_key
-
+        return encrypted_key    
+    
     def decrypt_private_key(self, password):
         """Decrypts the private key using the provided password."""
         try:
@@ -119,10 +123,46 @@ class EthereumWallet(models.Model):
 
             # Create a Fernet cipher using the derived key
             cipher = Fernet(key)
-
+            
             # Decrypt the private key
-            decrypted_key = cipher.decrypt(self.encrypted_private_key).decode()
-
-            return decrypted_key
+            decrypted_key = cipher.decrypt(self.encrypted_private_key)
+            return decrypted_key.decode()
         except Exception as e:
-            raise ValueError("Failed to decrypt private key: incorrect password or corrupted key")
+            # Handle decryption failures (wrong password, corrupted data, etc.)
+            raise ValueError(f"Failed to decrypt private key: {str(e)}")
+            
+    def rotate_encryption_key(self, old_password, new_password):
+        """
+        Re-encrypt the private key with a new password.
+        
+        Args:
+            old_password: Current password used to encrypt the private key
+            new_password: New password to use for encryption
+            
+        Returns:
+            bool: True if rotation was successful
+            
+        Raises:
+            ValueError: If decryption with old password fails
+        """
+        # First decrypt with the old password
+        try:
+            private_key_hex = self.decrypt_private_key(old_password)
+            
+            # Generate new salt for enhanced security
+            new_salt = os.urandom(16)
+            
+            # Encrypt the private key with the new password and salt
+            new_encrypted_key = self._encrypt_private_key(private_key_hex, new_password, new_salt)
+            
+            # Update the wallet with new encrypted data
+            self.encrypted_private_key = new_encrypted_key
+            self.salt = new_salt
+            self.updated_at = timezone.now()
+            self.save(update_fields=['encrypted_private_key', 'salt', 'updated_at'])
+            
+            return True
+        except ValueError as e:
+            raise ValueError(f"Key rotation failed: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Unexpected error during key rotation: {str(e)}")

@@ -25,30 +25,35 @@ services:
       - "5433:5432"
     env_file:
       - .env
-    restart: unless-stopped
-  
+    restart: unless-stopped  
+
   ganache:
     image: trufflesuite/ganache:latest
-    ports:
-      - "8545:8545"
-    command:
-      - --deterministic
-      - --chain.networkId=1337
-      - --chain.chainId=1337
-      - --miner.blockTime=0
-      - --miner.instamine=eager
-      - --wallet.defaultBalance=100
-      - --accounts=10
-      - --server.host=0.0.0.0
-      - --database.dbPath=/ganache/data
     volumes:
-      - ganache_data:/ganache/data
-
+        - ganache_data:/ganache/data
+    ports:
+        - "8545:8545"
+    command: >-
+        --deterministic
+        --chain.networkId=1337
+        --chain.chainId=1337
+        --miner.blockGasLimit=5000000
+        --miner.blockTime=0
+        --miner.instamine=eager
+        --gasPrice=1000000000
+        --wallet.defaultBalance=1000000000
+        --accounts=10
+        --server.host=0.0.0.0
+        --database.dbPath=/ganache/data
   web:
     build: .
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
-      - .:/app
+      - ./api:/app/api
+      - ./blockchain:/app/blockchain
+      - ./dsp:/app/dsp
+      - ./verification:/app/verification
+      - ./manage.py:/app/manage.py
     ports:
       - "8000:8000"
     depends_on:
@@ -56,18 +61,17 @@ services:
       - auth_db
       - ganache
     environment:
-    - DB_HOST=db
-    - DB_PORT=5432
-    - DB_USER=${DB_USER}
-    - DB_PASSWORD=${DB_PASSWORD}
-    - DB_NAME=${DB_NAME}
-    - AUTH_DB_HOST=auth_db
-    - AUTH_DB_PORT=5432
-    - AUTH_DB_USER=${DB_AUTH_USER}
-    - AUTH_DB_PASSWORD=${DB_AUTH_PASSWORD}
-    - AUTH_DB_NAME=${DB_AUTH_NAME}
-    - ETHEREUM_NODE_URL=http://ganache:8545
-    - DEBUG=1
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - AUTH_DB_HOST=auth_db
+      - AUTH_DB_PORT=5432
+      - AUTH_DB_USER=${DB_AUTH_USER}
+      - AUTH_DB_PASSWORD=${DB_AUTH_PASSWORD}
+      - AUTH_DB_NAME=${DB_AUTH_NAME}
+      - ETHEREUM_NODE_URL=http://ganache:8545
     env_file:
       - .env 
 

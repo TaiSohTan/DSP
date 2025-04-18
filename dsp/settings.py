@@ -162,13 +162,13 @@ EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@evoting.com')
-USE_EMAIL_SERVICE = os.getenv('USE_EMAIL_SERVICE', 'True') == 'True'  # Set to False to disable email service
+USE_EMAIL_SERVICE = os.getenv('USE_EMAIL_SERVICE', 'True') == 'False'  # Set to False to disable email service
 
 # Twilio settings for SMS OTP
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
-USE_SMS_SERVICE = os.getenv('USE_SMS_SERVICE', 'False') == 'True'  # Set to True to use actual Twilio service
+USE_SMS_SERVICE = False  # Explicitly disable Twilio service for development
 
 # Cache settings for OTP storage
 CACHES = {
@@ -199,6 +199,81 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 # Default primary key field type
+
+# AES-256 Encryption settings
+# In production, set this via environment variable
+DATABASE_ENCRYPTION_KEY = os.environ.get('DATABASE_ENCRYPTION_KEY')
+if not DATABASE_ENCRYPTION_KEY:
+    # Auto-generate a key for development
+    if DEBUG:
+        from Crypto.Random import get_random_bytes
+        import base64
+        random_key = get_random_bytes(32)  # Generate a 32-byte key (256 bits)
+        DATABASE_ENCRYPTION_KEY = base64.b64encode(random_key).decode('utf-8')
+        print(f"WARNING: Using auto-generated DATABASE_ENCRYPTION_KEY for development")
+    else:
+        # Don't auto-generate in production
+        raise Exception("DATABASE_ENCRYPTION_KEY must be set in production environment")
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Logging Configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',  # Changed from DEBUG to INFO
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'debug.log'),
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        '': {  # Root logger
+            'handlers': ['console', 'file'],
+            'level': 'INFO',  # Changed from DEBUG to INFO
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'api': {  # Your app logger
+            'handlers': ['console', 'file'],
+            'level': 'INFO',  # Changed from DEBUG to INFO
+            'propagate': False,
+        },
+        'web3': {  # Web3 library logging
+            'handlers': ['file'],  # Only log to file, not console
+            'level': 'WARNING',  # Only log warnings and errors
+            'propagate': False,
+        },
+        'blockchain.services': {  # Blockchain services
+            'handlers': ['console', 'file'],
+            'level': 'INFO',  # Only INFO and above, not DEBUG
+            'propagate': False,
+        },
+        'api.serializers.election_serializers': {  # Election serializers
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

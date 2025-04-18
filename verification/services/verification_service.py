@@ -1,6 +1,10 @@
 from typing import Dict, Tuple, Union, Optional
 from verification.models import VerificationUser
 from django.db.models import Q
+from django.contrib.auth import get_user_model
+from verification.signals import user_verified
+
+User = get_user_model()
 
 class VerificationService:
     """
@@ -86,8 +90,26 @@ class VerificationService:
             # If there are any errors, verification failed
             if errors:
                 return False, errors
-            
-            # All checks passed
+              # All checks passed
+            # Find if there's a Django user with this email
+            try:
+                user = User.objects.get(email=email)
+                # Send signal that user has been verified
+                user_verified.send(
+                    sender=VerificationService,
+                    user=user,
+                    verification_data={
+                        'full_name': full_name,
+                        'government_id': government_id,
+                        'email': email,
+                        'phone_number': phone_number,
+                        'verification_record': user
+                    }
+                )
+            except User.DoesNotExist:
+                # No Django user exists with this email yet
+                pass
+                
             return True, {}
             
         except Exception as e:

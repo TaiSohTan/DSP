@@ -4,6 +4,7 @@ from django.utils import timezone
 import uuid
 import random 
 import string
+from .fields import AESEncryptedTextField, AESEncryptedCharField
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, government_id, full_name, password=None, **extra_fields):
@@ -37,7 +38,57 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault('is_verified', True)
         extra_fields.setdefault('role', 'ADMIN')
         
-        return self.create_user(email, government_id, full_name, password, **extra_fields)
+        user = self.create_user(email, government_id, full_name, password, **extra_fields)
+          # Create Ethereum wallet for superuser
+        try:
+            import uuid
+            import os
+            from blockchain.models import EthereumWallet
+            from blockchain.services.ethereum_service import EthereumService
+            from dotenv import load_dotenv, set_key
+            
+            # Generate a secure random password for the wallet
+            wallet_password = uuid.uuid4().hex
+            
+            # Create and save the wallet
+            wallet = EthereumWallet.create_wallet(user, wallet_password)
+            # Fund the wallet with 10000 ETH (higher amount for admins but within Ganache limits)
+            service = EthereumService()
+            service.fund_user_wallet(wallet.address, amount_ether=10000)
+            
+            # Store wallet details in .env file for recovery (not secure for production)
+            env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+            
+            # Make sure .env exists
+            if not os.path.exists(env_path):
+                with open(env_path, 'a') as f:
+                    pass
+                    
+            # Load existing variables
+            load_dotenv(env_path)
+            
+            # Add or update variables in .env file
+            set_key(env_path, f"ADMIN_WALLET_ADDRESS_{user.email.replace('@', '_AT_')}", wallet.address)
+            set_key(env_path, f"ADMIN_WALLET_PASSWORD_{user.email.replace('@', '_AT_')}", wallet_password)
+            
+            # Also set as main admin wallet if none exists
+            if not os.getenv('ADMIN_WALLET_PRIVATE_KEY'):
+                private_key = wallet.decrypt_private_key(wallet_password)
+                set_key(env_path, "ADMIN_WALLET_PRIVATE_KEY", private_key)
+                set_key(env_path, "ADMIN_WALLET_ADDRESS", wallet.address)
+            
+            # Log wallet creation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Created wallet for admin {user.email}: {wallet.address}")
+            logger.info(f"IMPORTANT: Admin wallet password: {wallet_password} (Saved to .env file)")
+        except Exception as e:
+            # Log the error but don't prevent superuser creation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to create Ethereum wallet for admin {user.email}: {str(e)}")
+        
+        return user
 
 class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = (
@@ -45,24 +96,22 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('VOTER', 'Voter'),
         ('OBSERVER', 'Observer'),
     )
-    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
-    government_id = models.CharField(max_length=20, unique=True)
+    government_id = AESEncryptedCharField(max_length=100, unique=True)  # Encrypted
     full_name = models.CharField(max_length=100)
     system_username = models.CharField(max_length=50, unique=True)
-    phone_number = models.CharField(max_length=15, unique=True)
+    phone_number = AESEncryptedCharField(max_length=50, unique=True)  # Encrypted
     
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_verified = models.BooleanField(default=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='VOTER')
-    
     date_joined = models.DateTimeField(default=timezone.now)
     last_login = models.DateTimeField(null=True, blank=True)
     
     ethereum_address = models.CharField(max_length=42, blank=True, null=True)
-    ethereum_private_key = models.CharField(max_length=66, blank=True, null=True)
+    ethereum_private_key = AESEncryptedTextField(blank=True, null=True)  # Encrypted with AES
     
     objects = CustomUserManager()
     
@@ -84,19 +133,18 @@ class UserProfile(models.Model):
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-    # User verification fields
+      # User verification fields
     is_verified = models.BooleanField(default=False)
-    government_id = models.CharField(max_length=20, unique=True)
+    government_id = AESEncryptedCharField(max_length=100, unique=True)  # Encrypted
     government_id_type = models.CharField(max_length=20, choices=[
         ('PASSPORT', 'Passport'),
         ('NATIONAL_ID', 'National ID'),
         ('DRIVERS_LICENSE', 'Driver\'s License'),
     ])
-    phone_number = models.CharField(max_length=15, unique=True)
+    phone_number = AESEncryptedCharField(max_length=50, unique=True)  # Encrypted
     
     # Address fields
-    address = models.TextField(blank=True)
+    address = AESEncryptedTextField(blank=True)  # Encrypted
     postal_code = models.CharField(max_length=15, blank=True)
     city = models.CharField(max_length=50, blank=True)
     country = models.CharField(max_length=50, blank=True)
@@ -168,6 +216,7 @@ class Vote(models.Model):
     is_confirmed = models.BooleanField(default=False)
     
     class Meta:
+        ordering = ['id'] ## Default Ordering for Paginator
         unique_together = ('voter', 'election')  # Ensure one vote per election per voter
     
     def __str__(self):
