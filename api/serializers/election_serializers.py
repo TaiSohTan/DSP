@@ -2,6 +2,9 @@ from rest_framework import serializers
 from api.models import Election, Candidate, Vote
 from django.utils import timezone                  
 import pytz
+from blockchain.services.ethereum_service import EthereumService
+from django.conf import settings
+import logging
 
 
 class CandidateSerializer(serializers.ModelSerializer):
@@ -132,9 +135,6 @@ class ElectionSerializer(serializers.ModelSerializer):
                     
                     # Convert datetime to Unix timestamps for the smart contract
                     # Ensure we're using UTC timestamps to align with blockchain time
-                    from django.utils import timezone
-                    import pytz  # Add missing import for pytz
-                    
                     # Convert to UTC, then get timestamp to ensure timezone alignment with blockchain
                     start_time_utc = int(timezone.localtime(election.start_date, pytz.UTC).timestamp())
                     end_time_utc = int(timezone.localtime(election.end_date, pytz.UTC).timestamp())
@@ -144,9 +144,15 @@ class ElectionSerializer(serializers.ModelSerializer):
                     logger.info(f"  Original start: {election.start_date} → UTC timestamp: {start_time_utc}")
                     logger.info(f"  Original end: {election.end_date} → UTC timestamp: {end_time_utc}")
                     
-                    # Use the UTC timestamps
-                    start_time = start_time_utc
+                    # Adjust start time by subtracting one hour (3600 seconds) as per requirement
+                    adjusted_start_time = start_time_utc - 3600
+                    
+                    # Use the adjusted start time and original end time
+                    start_time = adjusted_start_time
                     end_time = end_time_utc
+                    
+                    # Log the adjusted timestamp
+                    logger.info(f"  Adjusted start for blockchain: {adjusted_start_time} (one hour earlier)")
                     
                     # Validate private key before using it
                     if not private_key:
@@ -154,10 +160,18 @@ class ElectionSerializer(serializers.ModelSerializer):
                         logger = logging.getLogger(__name__)
                         logger.error(f"Cannot deploy contract for election {election.id}: No valid private key found")
                         raise ValueError("No valid private key available for contract deployment")
-                    
-                    # Get the account address from the private key
+                      # Get the account address from the private key
                     account = ethereum_service.get_account_from_private_key(private_key)
-                    admin_address = account.address
+                    
+                    # Ensure admin_address is a proper string, not an empty object
+                    if not account or not hasattr(account, 'address'):
+                        raise ValueError("Invalid account object - could not get address")
+                    
+                    # Convert the address to string explicitly to avoid Web3.Empty objects
+                    admin_address = str(account.address) if account.address else None
+                    
+                    if not admin_address:
+                        raise ValueError("Empty address returned from account")
                     
                     # Check balance and fund if necessary 
                     balance = ethereum_service.w3.eth.get_balance(admin_address)

@@ -355,6 +355,55 @@ class VoteViewSet(viewsets.ModelViewSet):
                         {'error': 'This election is not currently active on the blockchain. Voting is not possible at this time.'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
+                
+                # NEW CODE: Check if user is eligible and add them to eligible voters if not
+                try:
+                    is_eligible = ethereum_service.is_eligible_voter(
+                        contract_address=election.contract_address,
+                        voter_address=user_address
+                    )
+                    
+                    # If not eligible, use admin's private key to add user to eligible voters
+                    if not is_eligible:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.info(f"User {user.email} is not eligible to vote. Automatically adding as eligible voter.")
+                        
+                        # Get admin key - using the election creator's key
+                        admin_user = election.created_by
+                        if admin_user and admin_user.ethereum_private_key:
+                            # Add user to eligible voters
+                            ethereum_service.add_eligible_voter(
+                                private_key=admin_user.ethereum_private_key,
+                                contract_address=election.contract_address,
+                                voter_address=user_address
+                            )
+                            logger.info(f"User {user.email} successfully added as eligible voter.")
+                        else:
+                            # Fallback to system admin if election creator doesn't have key
+                            from django.contrib.auth import get_user_model
+                            User = get_user_model()
+                            # Try to find a superuser with ethereum keys
+                            admins = User.objects.filter(is_superuser=True, ethereum_private_key__isnull=False).first()
+                            if admins:
+                                ethereum_service.add_eligible_voter(
+                                    private_key=admins.ethereum_private_key,
+                                    contract_address=election.contract_address,
+                                    voter_address=user_address
+                                )
+                                logger.info(f"User {user.email} successfully added as eligible voter by superuser.")
+                            else:
+                                vote.delete()
+                                return Response(
+                                    {'error': 'You are not eligible to vote and no admin key is available to add you.'},
+                                    status=status.HTTP_400_BAD_REQUEST
+                                )
+                except Exception as eligibility_error:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Error checking or updating voter eligibility: {str(eligibility_error)}")
+                    # Continue anyway - the transaction might still succeed if the user is already eligible
+                
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)

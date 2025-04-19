@@ -30,21 +30,22 @@ services:
   ganache:
     image: trufflesuite/ganache:latest
     volumes:
-        - ganache_data:/ganache/data
+      - ganache_data:/ganache/data
     ports:
-        - "8545:8545"
+      - "8545:8545"
     command: >-
-        --deterministic
-        --chain.networkId=1337
-        --chain.chainId=1337
-        --miner.blockGasLimit=5000000
-        --miner.blockTime=0
-        --miner.instamine=eager
-        --gasPrice=1000000000
-        --wallet.defaultBalance=1000000000
-        --accounts=10
-        --server.host=0.0.0.0
-        --database.dbPath=/ganache/data
+      --deterministic
+      --chain.networkId=1337
+      --chain.chainId=1337
+      --miner.blockGasLimit=500000000
+      --miner.blockTime=0
+      --miner.instamine=eager
+      --miner.defaultGasPrice=1000000000
+      --wallet.defaultBalance=1000000000
+      --wallet.totalAccounts=10
+      --server.host=0.0.0.0
+      --database.dbPath=/ganache/data
+
   web:
     build: .
     command: python manage.py runserver 0.0.0.0:8000
