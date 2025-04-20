@@ -10,6 +10,8 @@ from .views import (
     VerifyPhoneOTPView,
     CompleteRegistrationView,
     ResendRegistrationOTPView,
+    RequestPasswordResetView, 
+    ResetPasswordView
 )
 from .views_election import (
     ElectionViewSet,
@@ -36,6 +38,10 @@ urlpatterns = [
     path('send-phone-otp/', SendPhoneOTPView.as_view(), name='send-phone-otp'),
     path('send-email-otp/', SendEmailOTPView.as_view(), name='send-email-otp'),
     path('verify-phone-otp/', VerifyPhoneOTPView.as_view(), name='verify-phone-otp'),
+
+    ## Password Request and Reset 
+    path('users/request-password-reset/', RequestPasswordResetView.as_view(), name='request-password-reset'),
+    path('users/reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     
     # Include router URLs
     path('', include(router.urls)),

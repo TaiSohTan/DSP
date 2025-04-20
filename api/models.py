@@ -180,6 +180,12 @@ class Election(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_created_elections')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    # Merkle tree fields
+    merkle_root = models.CharField(max_length=64, blank=True, null=True)
+    last_merkle_update = models.DateTimeField(null=True, blank=True)
+    merkle_tree_published = models.BooleanField(default=False)
+    merkle_publication_tx = models.CharField(max_length=66, blank=True, null=True)  # Tx hash if published to blockchain
 
     def __str__(self):
         return self.title
@@ -195,13 +201,45 @@ class Candidate(models.Model):
         return f"{self.name} - {self.election.title}"
 
 class Vote(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     voter = models.ForeignKey(User, on_delete=models.PROTECT, related_name='api_votes')
     election = models.ForeignKey(Election, on_delete=models.CASCADE, related_name='votes')
     candidate = models.ForeignKey(Candidate, on_delete=models.CASCADE, related_name='votes')
     timestamp = models.DateTimeField(auto_now_add=True)
-    transaction_hash = models.CharField(max_length=66, blank=True, null=True)  # Ethereum tx hash
+    transaction_hash = models.CharField(max_length=255, blank=True, null=True)
     is_confirmed = models.BooleanField(default=False)
+    confirmation_timestamp = models.DateTimeField(blank=True, null=True)
+    merkle_proof = models.JSONField(blank=True, null=True)
+    
+    # Nullification fields for DPA 2018 compliance
+    NULLIFICATION_STATUS_CHOICES = (
+        ('none', 'None'),
+        ('pending', 'Pending'),
+        ('nullified', 'Nullified'),
+        ('rejected', 'Rejected'),
+    )
+    nullification_status = models.CharField(
+        max_length=10,
+        choices=NULLIFICATION_STATUS_CHOICES,
+        default='none'
+    )
+    nullification_requested_at = models.DateTimeField(blank=True, null=True)
+    nullification_reason = models.TextField(blank=True, null=True)
+    nullification_approved_at = models.DateTimeField(blank=True, null=True)
+    nullification_approved_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, 
+        blank=True, 
+        null=True,
+        related_name='approved_nullifications'
+    )
+    nullification_rejected_at = models.DateTimeField(blank=True, null=True)
+    nullification_rejected_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, 
+        blank=True, 
+        null=True,
+        related_name='rejected_nullifications'
+    )
+    nullification_rejection_reason = models.TextField(blank=True, null=True)
+    nullification_transaction_hash = models.CharField(max_length=255, blank=True, null=True)
     
     class Meta:
         ordering = ['id'] ## Default Ordering for Paginator

@@ -801,3 +801,221 @@ class EthereumService:
         except Exception as e:
             logger.error(f"Error checking if election is active: {str(e)}")
             raise e
+    
+    def get_transaction(self, tx_hash: str) -> Dict[str, Any]:
+        """
+        Get a transaction by hash.
+        
+        Args:
+            tx_hash: Hash of the transaction
+            
+        Returns:
+            Transaction details
+            
+        Raises:
+            TransactionNotFound: If the transaction is not found
+        """
+        if not tx_hash.startswith('0x'):
+            tx_hash = f'0x{tx_hash}'
+            
+        return self.w3.eth.get_transaction(tx_hash)
+    
+    def verify_vote(
+        self,
+        contract_address: str,
+        transaction_hash: str,
+        voter_address: str,
+        candidate_id: int
+    ) -> Dict[str, Any]:
+        """
+        Verify that a vote transaction was properly recorded on the blockchain.
+        
+        Args:
+            contract_address: Address of the election contract
+            transaction_hash: Hash of the vote transaction
+            voter_address: Address of the voter
+            candidate_id: ID of the candidate that was voted for
+            
+        Returns:
+            Dictionary with verification results
+            
+        Raises:
+            Exception: If the verification fails
+        """
+        try:
+            # Get contract instance
+            contract = self.get_contract_instance(contract_address)
+            if not contract:
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Could not get contract instance'
+                    }
+                }
+            
+            # Get transaction receipt
+            tx_receipt = self.get_transaction_receipt(transaction_hash)
+            if not tx_receipt:
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Transaction receipt not found'
+                    }
+                }
+            
+            # Check if transaction was successful
+            if tx_receipt['status'] != 1:
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Transaction failed',
+                        'status': tx_receipt['status']
+                    }
+                }
+            
+            # Get transaction details
+            tx = self.get_transaction(transaction_hash)
+            if not tx:
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Transaction not found'
+                    }
+                }
+            
+            # Verify that the transaction was sent by the voter
+            if tx['from'].lower() != voter_address.lower():
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Transaction sender does not match voter address',
+                        'tx_sender': tx['from'],
+                        'voter_address': voter_address
+                    }
+                }
+            
+            # Verify that the transaction was sent to the contract
+            if tx['to'].lower() != contract_address.lower():
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Transaction receiver does not match contract address',
+                        'tx_receiver': tx['to'],
+                        'contract_address': contract_address
+                    }
+                }
+            
+            # Check if the voter has voted
+            has_voted = contract.functions.hasVoted(voter_address).call()
+            if not has_voted:
+                return {
+                    'verified': False,
+                    'details': {
+                        'error': 'Voter has not voted according to the contract'
+                    }
+                }
+            
+            # Verify that the transaction input data matches a vote for the specified candidate
+            # This is a more detailed check that requires decoding the transaction input
+            try:
+                # Decode the function call from the transaction input
+                func_obj, func_params = contract.decode_function_input(tx['input'])
+                
+                # Check if the function called was castVote
+                func_name = func_obj.fn_name
+                if func_name != 'castVote':
+                    return {
+                        'verified': False,
+                        'details': {
+                            'error': f'Transaction called {func_name} instead of castVote',
+                            'function_name': func_name
+                        }
+                    }
+                
+                # Check if the candidate ID matches
+                if 'candidateId' in func_params and func_params['candidateId'] != candidate_id:
+                    return {
+                        'verified': False,
+                        'details': {
+                            'error': 'Transaction voted for a different candidate',
+                            'tx_candidate_id': func_params['candidateId'],
+                            'expected_candidate_id': candidate_id
+                        }
+                    }
+                
+            except Exception as decode_error:
+                # If we can't decode the transaction input, log it but continue with verification
+                logger.warning(f"Could not decode transaction input: {str(decode_error)}")
+            
+            # If all checks pass, the vote is verified
+            return {
+                'verified': True,
+                'details': {
+                    'transaction_hash': transaction_hash,
+                    'block_number': tx_receipt['blockNumber'],
+                    'voter_address': voter_address,
+                    'candidate_id': candidate_id,
+                    'has_voted_on_chain': has_voted
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error verifying vote: {str(e)}")
+            return {
+                'verified': False,
+                'details': {
+                    'error': f'Error verifying vote: {str(e)}'
+                }
+            }
+    
+    def nullify_vote(self, contract_address, voter_address):
+        """
+        Nullify a vote for a voter in an election contract.
+        This allows the voter to cast another vote in compliance with DPA 2018.
+        
+        Args:
+            contract_address (str): The address of the election contract
+            voter_address (str): The address of the voter whose vote should be nullified
+            
+        Returns:
+            str: The transaction hash of the nullification transaction
+        """
+        try:
+            # Get the contract
+            contract = self.get_election_contract(contract_address)
+            
+            # Get admin's private key from environment
+            admin_private_key = os.getenv('ADMIN_WALLET_PRIVATE_KEY')
+            if not admin_private_key:
+                raise ValueError("Admin wallet private key not found in environment variables")
+            
+            # Ensure it has 0x prefix
+            if not admin_private_key.startswith('0x'):
+                admin_private_key = '0x' + admin_private_key
+                
+            # Build transaction for nullifying vote
+            tx = contract.functions.nullifyVote(voter_address).build_transaction({
+                'from': self.w3.eth.account.from_key(admin_private_key).address,
+                'nonce': self.w3.eth.get_transaction_count(
+                    self.w3.eth.account.from_key(admin_private_key).address
+                ),
+                'gas': 200000,  # Adjust gas as needed
+                'gasPrice': self.w3.eth.gas_price
+            })
+            
+            # Sign and send transaction
+            signed_tx = self.w3.eth.account.sign_transaction(tx, admin_private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            
+            # Wait for transaction to be mined
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            
+            if receipt['status'] == 0:
+                raise ValueError("Nullification transaction failed")
+                
+            # Return transaction hash as hexstring
+            return self.w3.to_hex(tx_hash)
+            
+        except Exception as e:
+            self.logger.error(f"Error nullifying vote: {str(e)}")
+            raise

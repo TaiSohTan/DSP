@@ -153,6 +153,9 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',  # Frontend development server
 ]
 
+## React Frontend URL
+FRONTEND_URL = 'http://localhost:3000'  
+
 # Email settings for OTP
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
 # To use actual SMTP in production, change to: 'django.core.mail.backends.smtp.EmailBackend'
@@ -162,7 +165,8 @@ EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@evoting.com')
-USE_EMAIL_SERVICE = os.getenv('USE_EMAIL_SERVICE', 'True') == 'False'  # Set to False to disable email service
+# Fixing incorrect logic: True enables email service, False disables it
+USE_EMAIL_SERVICE = os.getenv('USE_EMAIL_SERVICE', 'True') == 'True'  # Default to True (enabled)
 
 # Twilio settings for SMS OTP
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')

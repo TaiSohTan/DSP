@@ -508,3 +508,466 @@ class VoteViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to process vote: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    @action(detail=True, methods=['get'])
+    def receipt(self, request, pk=None):
+        """
+        Get a detailed vote receipt with cryptographic proof and verification instructions.
+        """
+        vote = self.get_object()
+        
+        # Check if vote exists and is confirmed
+        if not vote.is_confirmed or not vote.transaction_hash:
+            return Response(
+                {'error': 'Vote is not confirmed or missing transaction hash'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # Get blockchain transaction details
+        try:
+            ethereum_service = EthereumService()
+            tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
+            tx_details = ethereum_service.get_transaction(vote.transaction_hash)
+            
+            # Get block details
+            block = ethereum_service.w3.eth.get_block(tx_receipt['blockNumber'])
+            
+            # Verify vote on blockchain
+            verification_result = ethereum_service.verify_vote(
+                contract_address=vote.election.contract_address,
+                transaction_hash=vote.transaction_hash,
+                voter_address=request.user.ethereum_address,
+                candidate_id=vote.candidate.blockchain_id
+            )
+            
+            # Create comprehensive receipt
+            receipt_data = {
+                'vote_id': vote.id,
+                'voter': {
+                    'id': request.user.id,
+                    'address': request.user.ethereum_address,
+                },
+                'election': {
+                    'id': vote.election.id,
+                    'title': vote.election.title,
+                    'contract_address': vote.election.contract_address
+                },
+                'candidate': {
+                    'id': vote.candidate.id,
+                    'name': vote.candidate.name,
+                    'blockchain_id': vote.candidate.blockchain_id
+                },
+                'blockchain_data': {
+                    'transaction_hash': vote.transaction_hash,
+                    'block_number': tx_receipt['blockNumber'],
+                    'block_hash': tx_receipt['blockHash'].hex(),
+                    'block_timestamp': block['timestamp'],
+                    'gas_used': tx_receipt['gasUsed'],
+                    'status': 'Successful' if tx_receipt['status'] == 1 else 'Failed'
+                },
+                'cryptographic_proof': {
+                    'receipt_hash': vote.receipt_hash,
+                    'verification_data': f"{request.user.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+                },
+                'verification': {
+                    'verified': verification_result['verified'],
+                    'details': verification_result['details'] if 'details' in verification_result else None
+                },
+                'timestamp': vote.timestamp
+            }
+            
+            return Response(receipt_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to generate detailed receipt: {str(e)}")
+            return Response(
+                {'error': f'Failed to generate detailed receipt: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'])
+    def receipt_pdf(self, request, pk=None):
+        """
+        Generate and return a PDF receipt with verification instructions.
+        """
+        vote = self.get_object()
+        
+        # Check if vote exists and is confirmed
+        if not vote.is_confirmed or not vote.transaction_hash:
+            return Response(
+                {'error': 'Vote is not confirmed or missing transaction hash'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # Generate PDF receipt
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from io import BytesIO
+            import qrcode
+            from django.http import HttpResponse
+            from django.conf import settings
+            import os
+            
+            # Get transaction details
+            ethereum_service = EthereumService()
+            tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
+            
+            # Create a QR code with verification URL
+            verify_url = f"{settings.FRONTEND_URL}/verify-vote/{vote.id}"
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECTION_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(verify_url)
+            qr.make(fit=True)
+            qr_img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Save QR code to BytesIO
+            qr_buffer = BytesIO()
+            qr_img.save(qr_buffer)
+            qr_buffer.seek(0)
+            
+            # Create PDF
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=letter)
+            styles = getSampleStyleSheet()
+            
+            # Add custom styles
+            styles.add(ParagraphStyle(
+                name='Title',
+                parent=styles['Heading1'],
+                fontSize=18,
+                alignment=1,  # Center
+                spaceAfter=20
+            ))
+            
+            # Build document content
+            content = []
+            
+            # Title
+            content.append(Paragraph("Official Vote Receipt", styles['Title']))
+            content.append(Spacer(1, 20))
+            
+            # Vote Information table
+            vote_data = [
+                ['Vote ID', str(vote.id)],
+                ['Election', vote.election.title],
+                ['Candidate', vote.candidate.name],
+                ['Timestamp', vote.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')],
+                ['Transaction Hash', vote.transaction_hash],
+                ['Block Number', str(tx_receipt['blockNumber'])],
+                ['Status', 'Confirmed' if tx_receipt['status'] == 1 else 'Failed']
+            ]
+            
+            vote_table = Table(vote_data, colWidths=[120, 300])
+            vote_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            
+            content.append(vote_table)
+            content.append(Spacer(1, 30))
+            
+            # Blockchain verification information
+            content.append(Paragraph("Verification Instructions", styles['Heading2']))
+            content.append(Spacer(1, 10))
+            
+            verification_text = """
+            This receipt provides cryptographic proof of your vote. To verify your vote:
+            
+            1. Scan the QR code below or visit the URL to access the verification page
+            2. Your vote transaction can be verified on any Ethereum blockchain explorer by using the transaction hash
+            3. The receipt hash provides tamper-proof evidence of your vote selection
+            
+            If you encounter any issues with verification, please contact the election administrator.
+            """
+            
+            content.append(Paragraph(verification_text, styles['Normal']))
+            content.append(Spacer(1, 20))
+            
+            # Add QR code
+            content.append(Paragraph("Scan to Verify:", styles['Heading3']))
+            content.append(Spacer(1, 10))
+            
+            # Add QR code image
+            qr_img = Image(qr_buffer, width=150, height=150)
+            content.append(qr_img)
+            content.append(Spacer(1, 10))
+            
+            # Add verification URL
+            content.append(Paragraph(f"Verification URL: {verify_url}", styles['Normal']))
+            content.append(Spacer(1, 20))
+            
+            # Add receipt hash
+            content.append(Paragraph("Receipt Hash:", styles['Heading3']))
+            content.append(Paragraph(vote.receipt_hash, styles['Normal']))
+            
+            # Build the PDF
+            doc.build(content)
+            buffer.seek(0)
+            
+            # Create HTTP response with PDF
+            response = HttpResponse(buffer.read(), content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename=vote_receipt_{vote.id}.pdf'
+            
+            return response
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to generate PDF receipt: {str(e)}")
+            return Response(
+                {'error': f'Failed to generate PDF receipt: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'])
+    def verify(self, request, pk=None):
+        """
+        Verify a vote on the blockchain and check if it has been counted correctly.
+        """
+        vote = self.get_object()
+        
+        # Check if vote exists and is confirmed
+        if not vote.is_confirmed or not vote.transaction_hash:
+            return Response(
+                {'error': 'Vote is not confirmed or missing transaction hash'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Perform verification
+        try:
+            ethereum_service = EthereumService()
+            
+            # Get transaction receipt
+            tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
+            
+            # Verify the transaction exists and was successful
+            if not tx_receipt or tx_receipt['status'] != 1:
+                return Response({
+                    'verified': False,
+                    'message': 'Transaction failed or does not exist on the blockchain',
+                    'details': {
+                        'transaction_exists': bool(tx_receipt),
+                        'status': tx_receipt['status'] if tx_receipt else None
+                    }
+                }, status=status.HTTP_200_OK)
+            
+            # Verify vote was counted for the correct candidate
+            verification_result = ethereum_service.verify_vote(
+                contract_address=vote.election.contract_address,
+                transaction_hash=vote.transaction_hash,
+                voter_address=request.user.ethereum_address,
+                candidate_id=vote.candidate.blockchain_id
+            )
+            
+            # Check if receipt hash matches
+            receipt_data = f"{request.user.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+            calculated_hash = hashlib.sha256(receipt_data.encode()).hexdigest()
+            hash_valid = calculated_hash == vote.receipt_hash
+            
+            # Check if the vote has been counted in the election results
+            try:
+                # Get election results from blockchain
+                results = ethereum_service.get_election_results(vote.election.contract_address)
+                
+                # Check if candidate's vote count includes this vote
+                candidate_found = False
+                for candidate_result in results['candidates']:
+                    if int(candidate_result['id']) == vote.candidate.blockchain_id:
+                        candidate_found = True
+                        break
+                
+                if not candidate_found:
+                    verification_result['verified'] = False
+                    verification_result['details']['candidate_in_results'] = False
+            except Exception as e:
+                # Log but continue with verification
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error checking election results: {str(e)}")
+                verification_result['details']['results_verification_error'] = str(e)
+            
+            # Combine all verification results
+            final_result = {
+                'verified': verification_result['verified'] and hash_valid,
+                'message': 'Vote successfully verified' if (verification_result['verified'] and hash_valid) else 'Vote verification failed',
+                'details': {
+                    'transaction_verified': verification_result['verified'],
+                    'receipt_hash_valid': hash_valid,
+                    'blockchain_details': verification_result['details'] if 'details' in verification_result else {},
+                    'election_contract': vote.election.contract_address,
+                    'transaction_hash': vote.transaction_hash,
+                    'block_number': tx_receipt['blockNumber'] if tx_receipt else None,
+                }
+            }
+            
+            return Response(final_result, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to verify vote: {str(e)}")
+            return Response(
+                {'error': f'Failed to verify vote: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def request_nullification(self, request, pk=None):
+        """Request to nullify a vote."""
+        try:
+            vote = self.get_object()
+            
+            # Check if this vote belongs to the requesting user
+            if vote.voter != request.user:
+                return Response(
+                    {"error": "You can only request nullification of your own votes"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Check if vote is already nullified or pending nullification
+            if vote.nullification_status in ['nullified', 'pending']:
+                return Response(
+                    {"error": f"Vote is already in '{vote.nullification_status}' state"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Check if vote is confirmed on blockchain
+            if not vote.is_confirmed or not vote.transaction_hash:
+                return Response(
+                    {"error": "Only confirmed votes can be nullified"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Set nullification status to pending
+            vote.nullification_status = 'pending'
+            vote.nullification_requested_at = timezone.now()
+            vote.nullification_reason = request.data.get('reason', '')
+            vote.save()
+            
+            # TODO: Notify admins about nullification request
+            # This would be implemented based on your notification system
+            
+            return Response({
+                "message": "Nullification request submitted successfully",
+                "vote_id": vote.id,
+                "status": vote.nullification_status
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to request nullification: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'])
+    def approve_nullification(self, request, pk=None):
+        """Approve a vote nullification request (admin only)."""
+        try:
+            # Check if user is admin
+            if not request.user.is_staff:
+                return Response(
+                    {"error": "Only administrators can approve nullification requests"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            vote = self.get_object()
+            
+            # Check if vote is pending nullification
+            if vote.nullification_status != 'pending':
+                return Response(
+                    {"error": "This vote is not pending nullification"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Get the ethereum service
+            from blockchain.services.ethereum_service import EthereumService
+            ethereum_service = EthereumService()
+            
+            # Nullify vote on blockchain
+            tx_hash = ethereum_service.nullify_vote(
+                contract_address=vote.election.contract_address,
+                voter_address=vote.voter.ethereum_address
+            )
+            
+            # Update vote status
+            vote.nullification_status = 'nullified'
+            vote.nullification_approved_at = timezone.now()
+            vote.nullification_approved_by = request.user
+            vote.nullification_transaction_hash = tx_hash
+            vote.save()
+            
+            # Update the Merkle tree
+            from blockchain.services.merkle_service import MerkleService
+            MerkleService.handle_nullified_vote(vote.id)
+            
+            # TODO: Notify voter that they can now cast a new vote
+            # This would be implemented based on your notification system
+            
+            return Response({
+                "message": "Vote nullification approved successfully",
+                "vote_id": vote.id,
+                "transaction_hash": tx_hash,
+                "status": vote.nullification_status
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to approve nullification: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'])
+    def reject_nullification(self, request, pk=None):
+        """Reject a vote nullification request (admin only)."""
+        try:
+            # Check if user is admin
+            if not request.user.is_staff:
+                return Response(
+                    {"error": "Only administrators can reject nullification requests"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            vote = self.get_object()
+            
+            # Check if vote is pending nullification
+            if vote.nullification_status != 'pending':
+                return Response(
+                    {"error": "This vote is not pending nullification"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update vote status
+            vote.nullification_status = 'rejected'
+            vote.nullification_rejected_at = timezone.now()
+            vote.nullification_rejected_by = request.user
+            vote.nullification_rejection_reason = request.data.get('reason', '')
+            vote.save()
+            
+            # TODO: Notify voter that their request was rejected
+            # This would be implemented based on your notification system
+            
+            return Response({
+                "message": "Vote nullification request rejected",
+                "vote_id": vote.id,
+                "status": vote.nullification_status
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to reject nullification: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

@@ -20,6 +20,9 @@ from .serializers.user_serializers import (
 from .services.otp_service import OTPService
 from django.utils import timezone
 from datetime import timedelta
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAdminUser
+from .models import Vote
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -412,3 +415,129 @@ class ResendRegistrationOTPView(APIView):
                 'error': 'Failed to send new OTP'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+class RequestPasswordResetView(APIView):
+    """
+    API view for requesting password reset.
+    Sends a password reset link with a token to the user's email.
+    Uses the OTPService for token generation and email sending.
+    """
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request, *args, **kwargs):
+        email = request.data.get('email')
+        
+        if not email:
+            return Response({
+                'error': 'Email is required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if the user exists
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Don't reveal whether the user exists or not for security
+            return Response({
+                'message': 'If your email exists in our system, you will receive password reset instructions.'
+            })
+        
+        # Generate a reset token using OTPService
+        reset_token = OTPService.generate_password_reset_token(email)
+        
+        # Send reset email using OTPService
+        success = OTPService.send_password_reset_email(email, reset_token)
+        
+        if not success:
+            logger.error(f"Failed to send password reset email to {email}")
+            
+        # Return generic success message for security (don't reveal if email exists)
+        return Response({
+            'message': 'If your email exists in our system, you will receive password reset instructions.'
+        })
+
+class ResetPasswordView(APIView):
+    """
+    API view for resetting user password with a valid token.
+    Uses OTPService to verify reset tokens.
+    """
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request, *args, **kwargs):
+        token = request.data.get('token')
+        password = request.data.get('password')
+        email = request.data.get('email')
+        
+        if not token or not password or not email:
+            return Response({
+                'error': 'Token, email, and new password are required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate the token using OTPService
+        is_valid = OTPService.verify_password_reset_token(email, token)
+        
+        if not is_valid:
+            return Response({
+                'error': 'Invalid or expired token. Please request a new password reset link.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Find the user
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({
+                'error': 'User not found.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate password strength
+        try:
+            from django.contrib.auth.password_validation import validate_password
+            validate_password(password, user)
+        except Exception as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update the password
+        user.set_password(password)
+        user.save()
+        
+        # Token is already invalidated by verify_password_reset_token if valid
+        
+        return Response({
+            'message': 'Password reset successful. You can now log in with your new password.'
+        })
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def nullification_requests(request):
+    """Get all pending vote nullification requests."""
+    election_id = request.query_params.get('election_id')
+    
+    # Base query - get votes with nullification_status='pending'
+    query = Vote.objects.filter(nullification_status='pending')
+    
+    # Filter by election if provided
+    if election_id:
+        query = query.filter(election_id=election_id)
+        
+    # Order by requested date
+    query = query.order_by('-nullification_requested_at')
+    
+    # Prepare response data
+    result = []
+    for vote in query:
+        result.append({
+            'vote_id': vote.id,
+            'voter_id': vote.voter.id,
+            'voter_name': f"{vote.voter.first_name} {vote.voter.last_name}",
+            'voter_email': vote.voter.email,
+            'election_id': vote.election.id,
+            'election_title': vote.election.title,
+            'candidate_id': vote.candidate.id,
+            'candidate_name': vote.candidate.name,
+            'vote_timestamp': vote.timestamp,
+            'requested_at': vote.nullification_requested_at,
+            'reason': vote.nullification_reason,
+        })
+    
+    return Response(result)
