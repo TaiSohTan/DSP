@@ -10,11 +10,11 @@ import uuid
 import json
 import os
 from django.conf import settings
-from .models import User, UserProfile
+from .models import User
 from .serializers.user_serializers import (
     UserRegistrationSerializer,
     UserLoginSerializer,
-    UserProfileSerializer,
+    UserDetailSerializer,
     OTPVerificationSerializer
 )
 from .services.otp_service import OTPService
@@ -149,31 +149,26 @@ class CompleteRegistrationView(APIView):
                 'phone_number': auth_user.phone_number,  # Use auth DB value
                 'is_verified': True  # User is verified from the start
             }
-            
-            # Create the user
+              # Create the user with all data from auth database
+            user_data.update({
+                'government_id_type': auth_user.government_id_type,  # Use correct type from auth DB
+                'address': auth_user.address,  # Copy address from auth DB
+                'postal_code': auth_user.postal_code,  # Copy postal code from auth DB
+                'city': auth_user.city,  # Copy city from auth DB
+                'country': auth_user.country,  # Copy country from auth DB
+                'is_eligible_to_vote': auth_user.is_eligible_voter  # Use eligibility from auth DB
+            })
             user = User.objects.create_user(**user_data)
-              # Create UserProfile with all data from auth database
-            UserProfile.objects.create(
-                user=user,
-                government_id=auth_user.government_id,
-                government_id_type=auth_user.government_id_type,  # Use correct type from auth DB
-                phone_number=auth_user.phone_number,
-                address=auth_user.address,  # Copy address from auth DB
-                postal_code=auth_user.postal_code,  # Copy postal code from auth DB
-                city=auth_user.city,  # Copy city from auth DB
-                country=auth_user.country,  # Copy country from auth DB
-                is_verified=True,
-                is_eligible_to_vote=auth_user.is_eligible_voter  # Use eligibility from auth DB
-            )
             
             # Create Ethereum wallet for the verified user
             try:
                 from blockchain.services.ethereum_service import EthereumService
                 from blockchain.models import EthereumWallet
-                
-                # Generate a new Ethereum address and private key
+                  # Generate a new Ethereum address and private key
                 eth_service = EthereumService()
-                wallet_address, private_key = eth_service.create_user_wallet()
+                wallet_data = eth_service.create_user_wallet()
+                wallet_address = wallet_data['address']
+                private_key = wallet_data['private_key']
                 
                 # Create a random password for wallet encryption (in production, use a more secure method)
                 wallet_password = uuid.uuid4().hex
@@ -263,26 +258,20 @@ class UserLoginView(APIView):
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class UserProfileView(generics.RetrieveUpdateAPIView):
+class UserDetailView(generics.RetrieveUpdateAPIView):
     """
-    API view for retrieving and updating user profile information.
+    API view for retrieving and updating user information.
+    Uses the merged User model that now contains all profile fields.
+    Previously named UserProfileView before the User/UserProfile model merge.
     """
     permission_classes = [permissions.IsAuthenticated]
-    serializer_class = UserProfileSerializer
+    serializer_class = UserDetailSerializer
     
     def get_object(self):
-        try:
-            return UserProfile.objects.get(user=self.request.user)
-        except UserProfile.DoesNotExist:
-            return None
+        return self.request.user
     
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        if not instance:
-            return Response(
-                {'error': 'Profile not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
@@ -421,4 +410,5 @@ class ResendRegistrationOTPView(APIView):
         else:
             return Response({
                 'error': 'Failed to send new OTP'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

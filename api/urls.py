@@ -4,7 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     UserRegistrationView,
     UserLoginView,
-    UserProfileView,
+    UserDetailView,
     SendPhoneOTPView,
     SendEmailOTPView,
     VerifyPhoneOTPView,
@@ -26,11 +26,11 @@ router.register(r'votes', VoteViewSet)
 urlpatterns = [
     # User authentication & registration
     path('register/', UserRegistrationView.as_view(), name='register'),
-    path('register/complete/', CompleteRegistrationView.as_view(), name='complete-registration'),
+    path('register/confirm/', CompleteRegistrationView.as_view(), name='complete-registration'),
     path('resend-registration-otp/', ResendRegistrationOTPView.as_view(), name='resend-registration-otp'),
     path('login/', UserLoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('profile/', UserProfileView.as_view(), name='profile'),
+    path('profile/', UserDetailView.as_view(), name='profile'),
     
     # OTP verification
     path('send-phone-otp/', SendPhoneOTPView.as_view(), name='send-phone-otp'),

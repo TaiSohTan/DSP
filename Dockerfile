@@ -29,6 +29,5 @@ COPY . /app/
 # Make scripts executable
 RUN chmod +x /app/entrypoint.sh
 RUN chmod +x /app/wait_for.py
-RUN chmod +x /app/start_ganache.sh 
 
 ENTRYPOINT ["/app/entrypoint.sh"]

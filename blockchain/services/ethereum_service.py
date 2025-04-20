@@ -274,7 +274,7 @@ class EthereumService:
         self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         
         return tx_hash.hex()
-        
+    
     def cast_vote(
         self, 
         private_key: str, 
@@ -295,13 +295,86 @@ class EthereumService:
         Raises:
             Exception: If the transaction fails
         """
+        import sys
+        # Enhanced debug logging
+        logger.info("====== ETHEREUM SERVICE CAST_VOTE DEBUG ======")
+        
+        # Configure console handler for immediate visibility during development
+        if not any(isinstance(h, logging.StreamHandler) and h.stream == sys.stdout for h in logger.handlers):
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
+        
+        # Detailed debugging of private key (without exposing the actual key)
+        logger.info(f"Private key info - Type: {type(private_key)}")
+        logger.info(f"Private key info - Is None: {private_key is None}")
+        logger.info(f"Private key info - Is Empty: {private_key == ''}")
+        logger.info(f"Private key info - Is 'private_key' literal: {private_key == 'private_key'}")
+        logger.info(f"Private key info - Length: {len(private_key) if isinstance(private_key, str) else 'not a string'}")
+        
+        if isinstance(private_key, str):
+            logger.info(f"Private key format - First few chars: '{private_key[:4]}...'")
+            logger.info(f"Private key format - Has 0x prefix: {private_key.startswith('0x')}")
+        
+        # Validate private key
+        if not private_key or private_key == 'private_key':
+            error_msg = "Invalid private key: Cannot be empty or 'private_key'"
+            logger.error(error_msg)
+            logger.error(f"Actual private key value: '{private_key}'")
+            raise ValueError(error_msg)
+            
+        # Validate and normalize private key with detailed logging
+        if isinstance(private_key, str) and private_key.startswith('0x'):
+            normalized_private_key = private_key
+            logger.info("Private key already has 0x prefix, no normalization needed")
+        else:
+            # If it doesn't start with 0x, add it
+            if not isinstance(private_key, str):
+                error_msg = f"Private key must be a string, got {type(private_key)}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+                
+            normalized_private_key = f"0x{private_key}"
+            logger.info(f"Added 0x prefix to private key. Original length: {len(private_key)}, New length: {len(normalized_private_key)}")
+            logger.info(f"Normalized key format - First few chars: '{normalized_private_key[:6]}...'")
+        
         # Get contract instance
         contract = self.get_contract_instance(contract_address)
         if not contract:
-            raise ValueError("Could not get contract instance")
+            error_msg = "Could not get contract instance"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
             
-        # Get the account from the private key
-        account = self.get_account_from_private_key(private_key)
+        # The account creation will fail immediately if the key format is wrong
+        try:
+            # Get the account from the private key - very detailed logging here
+            logger.info("Attempting to create account from private key...")
+            logger.info(f"About to call get_account_from_private_key with key of length {len(normalized_private_key) if isinstance(normalized_private_key, str) else 'unknown'}")
+            
+            # Get the account from the private key
+            account = self.get_account_from_private_key(normalized_private_key)
+            
+            # Log account address info (safe to log)
+            logger.info(f"Successfully created account with address: {account.address}")
+        except Exception as e:
+            error_msg = f"Invalid private key format: {str(e)}"
+            logger.error(error_msg)
+            
+            # Log hexadecimal representation for debugging
+            if isinstance(normalized_private_key, str):
+                try:
+                    # Don't log the whole key, just check if it might be hexadecimal
+                    is_hex = all(c in '0123456789abcdefABCDEF' for c in normalized_private_key.replace('0x', '', 1))
+                    logger.error(f"Is key hexadecimal? {is_hex}")
+                    logger.error(f"Key starts with: {normalized_private_key[:min(8, len(normalized_private_key))]}")
+                except Exception as hex_err:
+                    logger.error(f"Error analyzing key format: {str(hex_err)}")
+            
+            # Add more debugging for common private key issues
+            logger.error(f"Full error details: {repr(e)}")
+            raise ValueError(f"Invalid private key format: {str(e)}")
         
         # Get transaction count (nonce)
         nonce = self.w3.eth.get_transaction_count(account.address)
@@ -313,9 +386,9 @@ class EthereumService:
             'gasPrice': self.w3.eth.gas_price,
             'nonce': nonce,
         })
-        
-        # Sign transaction
-        signed_txn = self.w3.eth.account.sign_transaction(transaction, private_key=private_key)
+
+        # Sign transaction - use normalized private key here
+        signed_txn = self.w3.eth.account.sign_transaction(transaction, private_key=normalized_private_key)
         
         # Send transaction
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)

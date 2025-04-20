@@ -413,12 +413,62 @@ class VoteViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'error': 'Could not verify election status. Please try again later.'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-                
-            # Cast vote on blockchain
+                )            # Cast vote on blockchain
             try:
+                # Enhanced logging for debugging
+                import logging
+                import sys
+                logger = logging.getLogger(__name__)
+                
+                # Configure a console handler for immediate visibility during development
+                if not logger.handlers:
+                    console_handler = logging.StreamHandler(sys.stdout)
+                    console_handler.setLevel(logging.DEBUG)
+                    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                    console_handler.setFormatter(formatter)
+                    logger.addHandler(console_handler)
+                    
+                logger.info(f"==== VOTE CONFIRMATION DEBUG ====")
+                logger.info(f"Attempting to cast vote for user ID: {request.user.id}, email: {request.user.email}")
+                logger.info(f"Election ID: {election.id}, Candidate ID: {candidate.id}")
+                
+                # Check if private key exists
+                private_key = request.user.ethereum_private_key
+                
+                # Debug private key without exposing actual content
+                if private_key is None:
+                    logger.error(f"CRITICAL ERROR: Private key is None for user {request.user.id}")
+                    vote.delete()
+                    return Response(
+                        {'error': 'Missing wallet private key. Please contact support.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                logger.info(f"Private key check - Type: {type(private_key)}, Length: {len(str(private_key)) if private_key else 0}")
+                logger.info(f"Private key value check - Is 'private_key' literal: {private_key == 'private_key'}")
+                logger.info(f"Private key format check - Has 0x prefix: {private_key.startswith('0x') if isinstance(private_key, str) else False}")
+                
+                if not private_key or private_key == 'private_key' or not isinstance(private_key, str):
+                    logger.error(f"Invalid private key format for user {request.user.email}")
+                    # Log the actual value for debugging (be careful with this in production)
+                    logger.error(f"Private key actual value: '{private_key}'")
+                    vote.delete()
+                    return Response(
+                        {'error': 'Invalid wallet configuration. Please contact support.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # Ensure proper formatting of private key (0x prefix)
+                original_key = private_key
+                if not private_key.startswith('0x'):
+                    private_key = '0x' + private_key
+                    logger.info(f"Added 0x prefix to private key. Original length: {len(original_key)}, New length: {len(private_key)}")
+                
+                logger.info(f"Calling ethereum_service.cast_vote with formatted private key")
+                
+                # Cast the vote with properly formatted private key
                 tx_hash = ethereum_service.cast_vote(
-                    private_key=request.user.ethereum_private_key,
+                    private_key=private_key,
                     contract_address=election.contract_address,
                     candidate_id=candidate.blockchain_id
                 )

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from api.models import User, UserProfile
+from api.models import User
 from verification.services.verification_service import VerificationService
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -56,7 +56,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             full_name=validated_data['full_name'],
             phone_number=validated_data['phone_number'],
             password=validated_data['password'],
-            is_verified=False  # User is not verified until OTP confirmation
+            is_verified=False,  # User is not verified until OTP confirmation
+            is_eligible_to_vote=False  # Not eligible to vote initially
         )
         
         # Generate Ethereum wallet for the user
@@ -66,17 +67,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         # Store Ethereum address and private key
         user.ethereum_address = account.address
         user.ethereum_private_key = private_key_hex
-        user.save()
         
-        # Create UserProfile with is_verified and is_eligible_to_vote set to False initially
-        profile = UserProfile.objects.create(
-            user=user,
-            government_id=validated_data['government_id'],
-            government_id_type='NATIONAL_ID',
-            phone_number=validated_data['phone_number'],
-            is_verified=False,
-            is_eligible_to_vote=False
-        )
+        # Default government_id_type if not provided
+        if not hasattr(user, 'government_id_type') or not user.government_id_type:
+            user.government_id_type = 'NATIONAL_ID'
+            
+        user.save()
         
         return user
 
@@ -88,13 +84,14 @@ class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(required=True, style={'input_type': 'password'})
 
-class UserProfileSerializer(serializers.ModelSerializer):
-    email = serializers.EmailField(source='user.email', read_only=True)
-    full_name = serializers.CharField(source='user.full_name', read_only=True)
-    
+class UserDetailSerializer(serializers.ModelSerializer):
+    """
+    Serializer for user details, now using the merged User model.
+    Previously named UserProfileSerializer before the User/UserProfile model merge.
+    """    
     class Meta:
-        model = UserProfile
+        model = User
         fields = ['email', 'full_name', 'government_id', 'government_id_type', 'phone_number',
                  'address', 'postal_code', 'city', 'country', 'is_verified', 
                  'is_eligible_to_vote', 'can_vote', 'cooldown_end_date']
-        read_only_fields = ['is_verified', 'is_eligible_to_vote', 'cooldown_end_date']
+        read_only_fields = ['email', 'government_id', 'is_verified', 'is_eligible_to_vote', 'cooldown_end_date']

@@ -103,13 +103,35 @@ class User(AbstractBaseUser, PermissionsMixin):
     system_username = models.CharField(max_length=50, unique=True)
     phone_number = AESEncryptedCharField(max_length=50, unique=True)  # Encrypted
     
+    # Former UserProfile fields
+    government_id_type = models.CharField(max_length=20, choices=[
+        ('PASSPORT', 'Passport'),
+        ('NATIONAL_ID', 'National ID'),
+        ('DRIVERS_LICENSE', 'Driver\'s License'),
+    ], default='NATIONAL_ID')
+    
+    # Address fields
+    address = AESEncryptedTextField(blank=True)  # Encrypted
+    postal_code = models.CharField(max_length=15, blank=True)
+    city = models.CharField(max_length=50, blank=True)
+    country = models.CharField(max_length=50, blank=True)
+    
+    # Account status
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_verified = models.BooleanField(default=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='VOTER')
     date_joined = models.DateTimeField(default=timezone.now)
     last_login = models.DateTimeField(null=True, blank=True)
+    account_creation_date = models.DateTimeField(auto_now_add=True)
+    cooldown_end_date = models.DateTimeField(null=True, blank=True)
+    is_eligible_to_vote = models.BooleanField(default=False)
     
+    # Voting statistics
+    votes_cast = models.PositiveIntegerField(default=0)
+    last_activity = models.DateTimeField(auto_now=True)
+    
+    # Ethereum fields
     ethereum_address = models.CharField(max_length=42, blank=True, null=True)
     ethereum_private_key = AESEncryptedTextField(blank=True, null=True)  # Encrypted with AES
     
@@ -117,6 +139,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['government_id', 'full_name']
+    
+    class Meta:
+        verbose_name = "User"
+        verbose_name_plural = "Users"
     
     def __str__(self):
         return self.email
@@ -126,47 +152,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     def is_observer(self):
         return self.role == 'OBSERVER'
-
-class UserProfile(models.Model):
-    """
-    Extended user profile for the E-Voting system.
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-      # User verification fields
-    is_verified = models.BooleanField(default=False)
-    government_id = AESEncryptedCharField(max_length=100, unique=True)  # Encrypted
-    government_id_type = models.CharField(max_length=20, choices=[
-        ('PASSPORT', 'Passport'),
-        ('NATIONAL_ID', 'National ID'),
-        ('DRIVERS_LICENSE', 'Driver\'s License'),
-    ])
-    phone_number = AESEncryptedCharField(max_length=50, unique=True)  # Encrypted
-    
-    # Address fields
-    address = AESEncryptedTextField(blank=True)  # Encrypted
-    postal_code = models.CharField(max_length=15, blank=True)
-    city = models.CharField(max_length=50, blank=True)
-    country = models.CharField(max_length=50, blank=True)
-    
-    # Account status
-    account_creation_date = models.DateTimeField(auto_now_add=True)
-    cooldown_end_date = models.DateTimeField(null=True, blank=True)
-    is_eligible_to_vote = models.BooleanField(default=False)
-    
-    # Voting statistics
-    votes_cast = models.PositiveIntegerField(default=0)
-    last_activity = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        verbose_name = "User Profile"
-        verbose_name_plural = "User Profiles"
-    
-    def __str__(self):
-        return f"Profile for {self.user.username}"
-    
+        
     def save(self, *args, **kwargs):
-        """Override save to set cooldown_end_date when creating a new profile."""
+        """Override save to set cooldown_end_date when creating a new user."""
         if not self.pk:  # New instance
             # Set cooldown to 24 hours from account creation
             self.cooldown_end_date = timezone.now() + timezone.timedelta(hours=24)
