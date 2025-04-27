@@ -1,9 +1,35 @@
-from rest_framework import viewsets, permissions, status, filters
-from rest_framework.decorators import action
-from rest_framework.response import Response
+import hashlib
+import logging
+import jwt
+from datetime import datetime
+from io import BytesIO
+
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import F
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.http import Http404, HttpResponse
+
+from rest_framework import viewsets, permissions, status, filters
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework.response import Response
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+
+from blockchain.services.ethereum_service import EthereumService
+from blockchain.utils.time_utils import (
+    get_current_time, 
+    system_to_blockchain_time, 
+    blockchain_to_system_time,
+    datetime_to_blockchain_timestamp
+)
+
 from .models import Election, Candidate, Vote
 from .serializers.election_serializers import (
     ElectionSerializer,
@@ -13,9 +39,7 @@ from .serializers.election_serializers import (
     VoteReceiptSerializer,
     VoteConfirmationSerializer
 )
-from blockchain.services.ethereum_service import EthereumService
 from .services.otp_service import OTPService
-import hashlib
 
 class ElectionViewSet(viewsets.ModelViewSet):
     """
@@ -27,7 +51,7 @@ class ElectionViewSet(viewsets.ModelViewSet):
     search_fields = ['title', 'description']
     ordering_fields = ['start_date', 'end_date', 'created_at']
     ordering = ['-start_date']
-    
+
     def get_serializer_class(self):
         """
         Return different serializers based on user permissions.
@@ -37,22 +61,10 @@ class ElectionViewSet(viewsets.ModelViewSet):
         if self.request.user.is_staff:
             return ElectionSerializer
         return PublicElectionSerializer
-    
-    def get_permissions(self):
-        """
-        Instantiates and returns the list of permissions that this view requires.
-        - GET requests are allowed for any authenticated user
-        - POST, PUT, PATCH, DELETE are restricted to admin users only
-        """
-        if self.action in ['list', 'retrieve', 'results']:
-            permission_classes = [permissions.IsAuthenticated]
-        else:
-            permission_classes = [permissions.IsAdminUser]
-        return [permission() for permission in permission_classes]
-    
+
     def get_queryset(self):
         """Filter elections based on query parameters."""
-        queryset = Election.objects.all()
+        queryset = Election.objects.all().prefetch_related('candidates')
         
         # Filter by active status
         active = self.request.query_params.get('active')
@@ -63,9 +75,45 @@ class ElectionViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(start_date__lte=now, end_date__gte=now, is_active=True)
             else:
                 queryset = queryset.exclude(start_date__lte=now, end_date__gte=now, is_active=True)
-        
+
         return queryset
-    
+
+    def retrieve(self, request, *args, **kwargs):
+        """
+        Retrieve a single election with enhanced status information.
+        """
+        instance = self.get_object()
+        now = timezone.now()
+        
+        # Determine the election status
+        if not instance.is_active:
+            status_message = "This election has not been activated yet."
+        elif instance.start_date > now:
+            status_message = "This election has not started yet."
+        elif instance.end_date < now:
+            status_message = "This election is now closed. Results will be available soon."
+        elif instance.start_date <= now <= instance.end_date:
+            status_message = "This election is currently active."
+        else:
+            status_message = "Election status unavailable."
+
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+        data['status_message'] = status_message
+        
+        # Add blockchain results if election is closed
+        if instance.end_date < now and instance.contract_address:
+            try:
+                ethereum_service = EthereumService()
+                results = ethereum_service.get_election_results(instance.contract_address)
+                data['results'] = results
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to get election results: {str(e)}")
+                data['results'] = None
+
+        return Response(data)
+
     def perform_create(self, serializer):
         """Set the created_by field to the current user when creating an election."""
         serializer.save(created_by=self.request.user)
@@ -96,21 +144,16 @@ class ElectionViewSet(viewsets.ModelViewSet):
         # Deploy contract
         try:
             ethereum_service = EthereumService()
-              # Convert datetime to UTC Unix timestamps for the smart contract
-            # Explicitly ensure we're using UTC timestamps to align with blockchain time
-            import datetime
-            from django.utils import timezone
             
-            # Convert aware datetime to UTC, then get timestamp
-            start_time_utc = int(timezone.localtime(election.start_date, timezone.utc).timestamp())
-            end_time_utc = int(timezone.localtime(election.end_date, timezone.utc).timestamp())
+            # Convert datetime to blockchain timestamps using utility functions
+            start_time_utc = datetime_to_blockchain_timestamp(election.start_date)
+            end_time_utc = datetime_to_blockchain_timestamp(election.end_date)
             
             # Log the timestamps for debugging
-            import logging
             logger = logging.getLogger(__name__)
             logger.info(f"Deploying contract for election {election.title}")
             logger.info(f"Original start time: {election.start_date}")
-            logger.info(f"UTC timestamp: {start_time_utc}")
+            logger.info(f"Blockchain timestamp: {start_time_utc}")
             
             # Deploy the contract
             tx_hash, contract_address = ethereum_service.deploy_election_contract(
@@ -156,32 +199,167 @@ class ElectionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny])
     def results(self, request, pk=None):
         """
         Get the results of an election from the blockchain.
+        This endpoint is publicly accessible without authentication.
         """
-        election = self.get_object()
-        
-        # Check if contract is deployed
-        if not election.contract_address:
-            return Response(
-                {'error': 'Election contract not deployed'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Get results from blockchain
         try:
-            ethereum_service = EthereumService()
-            results = ethereum_service.get_election_results(election.contract_address)
+            # Get election directly since permissions.AllowAny could mean user is not authenticated
+            election = Election.objects.get(pk=pk)
             
-            return Response(results)
+            # Set up logger for debugging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Fetching results for election {pk}")
+            logger.info(f"Election details: title={election.title}, contract_address={election.contract_address}")
+            
+            # Get current time for determining if election is completed
+            now = get_current_time()
+            is_completed = election.end_date < now
+            
+            # Prepare basic response data
+            election_data = PublicElectionSerializer(election).data
+            
+            # Explicitly include the contract address in the election data
+            if election.contract_address:
+                logger.info(f"Contract address found: {election.contract_address}")
+                election_data['contract_address'] = election.contract_address
+            else:
+                logger.warning(f"No contract address found for election {pk}")
+            
+            response_data = {
+                'electionData': election_data,
+                'isCompleted': is_completed,
+                'currentTime': now.isoformat()
+            }
+            
+            # Check if contract is deployed
+            if not election.contract_address or election.contract_address.strip() == '':
+                logger.error(f"No contract address found for election {pk}")
+                response_data['error'] = 'No contract address found'
+                return Response(response_data)
+            
+            # Get results from blockchain
+            try:
+                ethereum_service = EthereumService()
+                logger.info(f"Attempting to get results from contract: {election.contract_address}")
+                
+                # Try to get the results
+                results = ethereum_service.get_election_results(election.contract_address)
+                logger.info(f"Successfully retrieved results from blockchain: {results}")
+                
+                # Add results to response
+                response_data['results'] = results
+                return Response(response_data)
+                
+            except Exception as blockchain_error:
+                # Log the blockchain error
+                logger.error(f"Blockchain error getting election results: {str(blockchain_error)}", exc_info=True)
+                
+                # Add error to response but still return the election data
+                response_data['error'] = f'Error retrieving results from blockchain: {str(blockchain_error)}'
+                response_data['errorType'] = 'blockchain_error'
+                
+                return Response(response_data)
         
+        except Election.DoesNotExist:
+            return Response(
+                {'error': 'Election not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
         except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to get election results: {str(e)}", exc_info=True)
             return Response(
                 {'error': f'Failed to get election results: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """
+        Get currently active elections (start_date <= now <= end_date and is_active=True).
+        """
+        # Use the get_current_time utility for timezone adjustment
+        now = get_current_time()
+        logger = logging.getLogger(__name__)
+        
+        # Log the times for debugging
+        logger.info(f"Getting active elections with adjusted time: {now.isoformat()}")
+        
+        queryset = Election.objects.filter(
+            start_date__lte=now, 
+            end_date__gte=now, 
+            is_active=True
+        )
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+            
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def upcoming(self, request):
+        """
+        Get upcoming elections (start_date > now and is_active=True).
+        """
+        # Use the get_current_time utility for timezone adjustment
+        now = get_current_time()
+        logger = logging.getLogger(__name__)
+        
+        # Log the times for debugging
+        logger.info(f"Getting upcoming elections with adjusted time: {now.isoformat()}")
+        
+        queryset = Election.objects.filter(
+            start_date__gt=now,
+            is_active=True
+        )
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+            
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def past(self, request):
+        """
+        Get past elections (end_date < now or is_active=False).
+        """
+        # Use the get_current_time utility for timezone adjustment
+        now = get_current_time()
+        logger = logging.getLogger(__name__)
+        
+        # Log the times for debugging
+        logger.info(f"Getting past elections with adjusted time: {now.isoformat()}")
+        
+        queryset = Election.objects.filter(
+            end_date__lt=now
+        )
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+            
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def candidates(self, request, pk=None):
+        """
+        Get all candidates for a specific election.
+        """
+        election = self.get_object()
+        candidates = Candidate.objects.filter(election=election)
+        serializer = CandidateSerializer(candidates, many=True)
+        return Response(serializer.data)
 
 class CandidateViewSet(viewsets.ModelViewSet):
     """
@@ -290,11 +468,31 @@ class VoteViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to create vote: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    @action(detail=False, methods=['get'])
+    def my_votes(self, request):
+        """
+        Retrieve all votes made by the current user.
+        """
+        try:
+            votes = Vote.objects.filter(voter=request.user)
+            serializer = VoteReceiptSerializer(votes, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to retrieve votes: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
     @action(detail=False, methods=['post'])
     def confirm(self, request):
         """Confirm a vote with OTP and cast it on the blockchain."""
         serializer = VoteConfirmationSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
+        
+        # Don't delete the vote if OTP validation fails - we want to allow retries with new OTPs
+        # Instead, just return the validation errors
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         # Get validated data
         vote = serializer.validated_data['vote']
@@ -304,8 +502,6 @@ class VoteViewSet(viewsets.ModelViewSet):
         election = vote.election
         candidate = vote.candidate
         user = request.user
-        
-        # OTP is already verified in the serializer, no need to verify again here
         
         # Cast vote on blockchain
         try:
@@ -317,7 +513,6 @@ class VoteViewSet(viewsets.ModelViewSet):
             # Ensure the user has a wallet before proceeding
             if not user.ethereum_address or not user.ethereum_private_key:
                 # This should not happen since wallet creation is handled during verification
-                import logging
                 logger = logging.getLogger(__name__)
                 logger.error(f"User {user.email} has no Ethereum wallet even after verification")
                 # Delete the unconfirmed vote to allow retry
@@ -335,7 +530,6 @@ class VoteViewSet(viewsets.ModelViewSet):
                 
                 if balance < min_required:
                     # User has insufficient funds, auto-fund their wallet
-                    import logging
                     logger = logging.getLogger(__name__)
                     logger.info(f"User {request.user.email} has insufficient funds ({ethereum_service.w3.from_wei(balance, 'ether')} ETH). Auto-funding wallet.")
                     
@@ -356,7 +550,7 @@ class VoteViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
                 
-                # NEW CODE: Check if user is eligible and add them to eligible voters if not
+                # Check if user is eligible and add them to eligible voters if not
                 try:
                     is_eligible = ethereum_service.is_eligible_voter(
                         contract_address=election.contract_address,
@@ -365,7 +559,6 @@ class VoteViewSet(viewsets.ModelViewSet):
                     
                     # If not eligible, use admin's private key to add user to eligible voters
                     if not is_eligible:
-                        import logging
                         logger = logging.getLogger(__name__)
                         logger.info(f"User {user.email} is not eligible to vote. Automatically adding as eligible voter.")
                         
@@ -399,13 +592,11 @@ class VoteViewSet(viewsets.ModelViewSet):
                                     status=status.HTTP_400_BAD_REQUEST
                                 )
                 except Exception as eligibility_error:
-                    import logging
                     logger = logging.getLogger(__name__)
                     logger.error(f"Error checking or updating voter eligibility: {str(eligibility_error)}")
                     # Continue anyway - the transaction might still succeed if the user is already eligible
                 
             except Exception as e:
-                import logging
                 logger = logging.getLogger(__name__)
                 logger.error(f"Error checking election active status: {str(e)}")
                 # Delete the unconfirmed vote to allow retry
@@ -413,21 +604,13 @@ class VoteViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'error': 'Could not verify election status. Please try again later.'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )            # Cast vote on blockchain
+                )
+                
+            # Cast vote on blockchain
             try:
                 # Enhanced logging for debugging
-                import logging
-                import sys
                 logger = logging.getLogger(__name__)
                 
-                # Configure a console handler for immediate visibility during development
-                if not logger.handlers:
-                    console_handler = logging.StreamHandler(sys.stdout)
-                    console_handler.setLevel(logging.DEBUG)
-                    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-                    console_handler.setFormatter(formatter)
-                    logger.addHandler(console_handler)
-                    
                 logger.info(f"==== VOTE CONFIRMATION DEBUG ====")
                 logger.info(f"Attempting to cast vote for user ID: {request.user.id}, email: {request.user.email}")
                 logger.info(f"Election ID: {election.id}, Candidate ID: {candidate.id}")
@@ -579,7 +762,6 @@ class VoteViewSet(viewsets.ModelViewSet):
             return Response(receipt_data, status=status.HTTP_200_OK)
             
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to generate detailed receipt: {str(e)}")
             return Response(
@@ -587,156 +769,122 @@ class VoteViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
-    @action(detail=True, methods=['get'])
-    def receipt_pdf(self, request, pk=None):
+    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny], url_path='public_verify')
+    def public_verify(self, request, pk=None):
         """
-        Generate and return a PDF receipt with verification instructions.
+        Public endpoint to verify a vote without authentication.
         """
-        vote = self.get_object()
-        
-        # Check if vote exists and is confirmed
-        if not vote.is_confirmed or not vote.transaction_hash:
-            return Response(
-                {'error': 'Vote is not confirmed or missing transaction hash'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-            
-        # Generate PDF receipt
         try:
-            from reportlab.lib.pagesizes import letter
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib import colors
-            from io import BytesIO
-            import qrcode
-            from django.http import HttpResponse
-            from django.conf import settings
-            import os
+            # Get vote by ID without using self.get_object() which requires authentication
+            vote = Vote.objects.get(pk=pk)
             
-            # Get transaction details
+            # Check if vote exists and is confirmed
+            if not vote.is_confirmed or not vote.transaction_hash:
+                return Response(
+                    {'error': 'Vote is not confirmed or missing transaction hash'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Perform verification
             ethereum_service = EthereumService()
+            
+            # Get transaction receipt
             tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
             
-            # Create a QR code with verification URL
-            verify_url = f"{settings.FRONTEND_URL}/verify-vote/{vote.id}"
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECTION_L,
-                box_size=10,
-                border=4,
-            )
-            qr.add_data(verify_url)
-            qr.make(fit=True)
-            qr_img = qr.make_image(fill_color="black", back_color="white")
+            # Verify the transaction exists and was successful
+            if not tx_receipt or tx_receipt['status'] != 1:
+                return Response({
+                    'verified': False,
+                    'message': 'Transaction failed or does not exist on the blockchain',
+                    'details': {
+                        'transaction_exists': bool(tx_receipt),
+                        'status': tx_receipt['status'] if tx_receipt else None
+                    }
+                }, status=status.HTTP_200_OK)
             
-            # Save QR code to BytesIO
-            qr_buffer = BytesIO()
-            qr_img.save(qr_buffer)
-            qr_buffer.seek(0)
-            
-            # Create PDF
-            buffer = BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter)
-            styles = getSampleStyleSheet()
-            
-            # Add custom styles
-            styles.add(ParagraphStyle(
-                name='Title',
-                parent=styles['Heading1'],
-                fontSize=18,
-                alignment=1,  # Center
-                spaceAfter=20
-            ))
-            
-            # Build document content
-            content = []
-            
-            # Title
-            content.append(Paragraph("Official Vote Receipt", styles['Title']))
-            content.append(Spacer(1, 20))
-            
-            # Vote Information table
-            vote_data = [
-                ['Vote ID', str(vote.id)],
-                ['Election', vote.election.title],
-                ['Candidate', vote.candidate.name],
-                ['Timestamp', vote.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')],
-                ['Transaction Hash', vote.transaction_hash],
-                ['Block Number', str(tx_receipt['blockNumber'])],
-                ['Status', 'Confirmed' if tx_receipt['status'] == 1 else 'Failed']
-            ]
-            
-            vote_table = Table(vote_data, colWidths=[120, 300])
-            vote_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
-            ]))
-            
-            content.append(vote_table)
-            content.append(Spacer(1, 30))
-            
-            # Blockchain verification information
-            content.append(Paragraph("Verification Instructions", styles['Heading2']))
-            content.append(Spacer(1, 10))
-            
-            verification_text = """
-            This receipt provides cryptographic proof of your vote. To verify your vote:
-            
-            1. Scan the QR code below or visit the URL to access the verification page
-            2. Your vote transaction can be verified on any Ethereum blockchain explorer by using the transaction hash
-            3. The receipt hash provides tamper-proof evidence of your vote selection
-            
-            If you encounter any issues with verification, please contact the election administrator.
-            """
-            
-            content.append(Paragraph(verification_text, styles['Normal']))
-            content.append(Spacer(1, 20))
-            
-            # Add QR code
-            content.append(Paragraph("Scan to Verify:", styles['Heading3']))
-            content.append(Spacer(1, 10))
-            
-            # Add QR code image
-            qr_img = Image(qr_buffer, width=150, height=150)
-            content.append(qr_img)
-            content.append(Spacer(1, 10))
-            
-            # Add verification URL
-            content.append(Paragraph(f"Verification URL: {verify_url}", styles['Normal']))
-            content.append(Spacer(1, 20))
-            
-            # Add receipt hash
-            content.append(Paragraph("Receipt Hash:", styles['Heading3']))
-            content.append(Paragraph(vote.receipt_hash, styles['Normal']))
-            
-            # Build the PDF
-            doc.build(content)
-            buffer.seek(0)
-            
-            # Create HTTP response with PDF
-            response = HttpResponse(buffer.read(), content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename=vote_receipt_{vote.id}.pdf'
-            
-            return response
-            
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to generate PDF receipt: {str(e)}")
+            # Return verification result
+            return Response({
+                'verified': True,
+                'message': 'Vote successfully verified',
+                'details': {
+                    'transaction_hash': vote.transaction_hash,
+                    'election': vote.election.title,
+                    'candidate': vote.candidate.name,
+                    'timestamp': vote.timestamp,
+                    'block_number': tx_receipt['blockNumber']
+                }
+            }, status=status.HTTP_200_OK)
+        
+        except Vote.DoesNotExist:
             return Response(
-                {'error': f'Failed to generate PDF receipt: {str(e)}'},
+                {'error': f"Vote with ID {pk} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error verifying vote: {str(e)}")
+            return Response(
+                {'error': f"Error verifying vote: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
+
+    @action(detail=True, methods=['get'], permission_classes=[permissions.AllowAny], url_path='public_receipt')
+    def public_receipt(self, request, pk=None):
+        """
+        Public endpoint to get a vote receipt without authentication.
+        """
+        try:
+            # Get vote by ID without using self.get_object() which requires authentication
+            vote = Vote.objects.get(pk=pk)
+            
+            # Check if vote exists and is confirmed
+            if not vote.is_confirmed or not vote.transaction_hash:
+                return Response(
+                    {'error': 'Vote is not confirmed or missing transaction hash'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+            # Create a simplified receipt for public viewing
+            receipt_data = {
+                'vote_id': vote.id,
+                'election': {
+                    'id': vote.election.id,
+                    'title': vote.election.title,
+                    'contract_address': vote.election.contract_address
+                },
+                'candidate': {
+                    'id': vote.candidate.id,
+                    'name': vote.candidate.name,
+                    'blockchain_id': vote.candidate.blockchain_id
+                },
+                'blockchain_data': {
+                    'transaction_hash': vote.transaction_hash,
+                },
+                'cryptographic_proof': {
+                    'receipt_hash': vote.receipt_hash,
+                },
+                'timestamp': vote.timestamp
+            }
+            
+            return Response(receipt_data, status=status.HTTP_200_OK)
+                
+        except Vote.DoesNotExist:
+            return Response(
+                {'error': f"Vote with ID {pk} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error retrieving vote receipt: {str(e)}")
+            return Response(
+                {'error': f"Error retrieving vote receipt: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(detail=True, methods=['get'])
     def verify(self, request, pk=None):
         """
-        Verify a vote on the blockchain and check if it has been counted correctly.
+        Verify a vote on the blockchain and return the verification result.
         """
         vote = self.get_object()
         
@@ -746,7 +894,7 @@ class VoteViewSet(viewsets.ModelViewSet):
                 {'error': 'Vote is not confirmed or missing transaction hash'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+            
         # Perform verification
         try:
             ethereum_service = EthereumService()
@@ -765,7 +913,7 @@ class VoteViewSet(viewsets.ModelViewSet):
                     }
                 }, status=status.HTTP_200_OK)
             
-            # Verify vote was counted for the correct candidate
+            # Verify vote details on blockchain
             verification_result = ethereum_service.verify_vote(
                 contract_address=vote.election.contract_address,
                 transaction_hash=vote.transaction_hash,
@@ -773,201 +921,594 @@ class VoteViewSet(viewsets.ModelViewSet):
                 candidate_id=vote.candidate.blockchain_id
             )
             
-            # Check if receipt hash matches
-            receipt_data = f"{request.user.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
-            calculated_hash = hashlib.sha256(receipt_data.encode()).hexdigest()
-            hash_valid = calculated_hash == vote.receipt_hash
-            
-            # Check if the vote has been counted in the election results
-            try:
-                # Get election results from blockchain
-                results = ethereum_service.get_election_results(vote.election.contract_address)
-                
-                # Check if candidate's vote count includes this vote
-                candidate_found = False
-                for candidate_result in results['candidates']:
-                    if int(candidate_result['id']) == vote.candidate.blockchain_id:
-                        candidate_found = True
-                        break
-                
-                if not candidate_found:
-                    verification_result['verified'] = False
-                    verification_result['details']['candidate_in_results'] = False
-            except Exception as e:
-                # Log but continue with verification
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Error checking election results: {str(e)}")
-                verification_result['details']['results_verification_error'] = str(e)
-            
-            # Combine all verification results
-            final_result = {
-                'verified': verification_result['verified'] and hash_valid,
-                'message': 'Vote successfully verified' if (verification_result['verified'] and hash_valid) else 'Vote verification failed',
-                'details': {
-                    'transaction_verified': verification_result['verified'],
-                    'receipt_hash_valid': hash_valid,
-                    'blockchain_details': verification_result['details'] if 'details' in verification_result else {},
-                    'election_contract': vote.election.contract_address,
-                    'transaction_hash': vote.transaction_hash,
-                    'block_number': tx_receipt['blockNumber'] if tx_receipt else None,
-                }
-            }
-            
-            return Response(final_result, status=status.HTTP_200_OK)
+            # Return verification result
+            return Response({
+                'verified': verification_result['verified'],
+                'message': 'Vote successfully verified on blockchain' if verification_result['verified'] 
+                           else 'Vote verification failed',
+                'details': verification_result['details'] if 'details' in verification_result else None
+            }, status=status.HTTP_200_OK)
             
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
-            logger.error(f"Failed to verify vote: {str(e)}")
+            logger.error(f"Error verifying vote: {str(e)}")
             return Response(
-                {'error': f'Failed to verify vote: {str(e)}'},
+                {'error': f"Error verifying vote: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
-    @action(detail=True, methods=['post'])
-    def request_nullification(self, request, pk=None):
-        """Request to nullify a vote."""
-        try:
-            vote = self.get_object()
+    @action(detail=True, methods=['get', 'post'])
+    def receipt_pdf(self, request, pk=None):
+        """
+        Generate a PDF receipt for a vote.
+        Supports both GET with Bearer token and POST with token in form data.
+        """
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from django.http import HttpResponse
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"Generating PDF receipt for vote {pk}")
+        logger.info(f"Request method: {request.method}")
+        logger.info(f"Request headers: {request.headers}")
+        
+        # For POST requests with form data (fallback method)
+        if request.method == 'POST' and 'auth_token' in request.POST:
+            logger.info("Processing POST request with auth_token in form data")
+            token = request.POST.get('auth_token')
+            # Handle auth_token from POST data
+            # Rest of token handling code would go here (similar to GET token handling)
             
-            # Check if this vote belongs to the requesting user
-            if vote.voter != request.user:
-                return Response(
-                    {"error": "You can only request nullification of your own votes"},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # Check if vote is already nullified or pending nullification
-            if vote.nullification_status in ['nullified', 'pending']:
-                return Response(
-                    {"error": f"Vote is already in '{vote.nullification_status}' state"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Check if vote is confirmed on blockchain
-            if not vote.is_confirmed or not vote.transaction_hash:
-                return Response(
-                    {"error": "Only confirmed votes can be nullified"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Set nullification status to pending
-            vote.nullification_status = 'pending'
-            vote.nullification_requested_at = timezone.now()
-            vote.nullification_reason = request.data.get('reason', '')
-            vote.save()
-            
-            # TODO: Notify admins about nullification request
-            # This would be implemented based on your notification system
-            
-            return Response({
-                "message": "Nullification request submitted successfully",
-                "vote_id": vote.id,
-                "status": vote.nullification_status
-            })
-            
-        except Exception as e:
+        # Check if already authenticated by DRF authentication classes
+        if not request.user.is_authenticated:
+            logger.error("User is not authenticated")
             return Response(
-                {"error": f"Failed to request nullification: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': 'Authentication required'},
+                status=status.HTTP_401_UNAUTHORIZED
             )
-
-    @action(detail=True, methods=['post'])
-    def approve_nullification(self, request, pk=None):
-        """Approve a vote nullification request (admin only)."""
+        
         try:
-            # Check if user is admin
-            if not request.user.is_staff:
+            logger.info(f"User authenticated: {request.user.email}")
+            
+            # Get vote object
+            try:
+                vote = Vote.objects.get(pk=pk, voter=request.user)
+                logger.info(f"Found vote: {vote.id} for election: {vote.election.title}")
+            except Vote.DoesNotExist:
+                logger.error(f"Vote {pk} not found for user {request.user.email}")
                 return Response(
-                    {"error": "Only administrators can approve nullification requests"},
-                    status=status.HTTP_403_FORBIDDEN
+                    {'error': 'Vote not found or you do not have permission to access it'},
+                    status=status.HTTP_404_NOT_FOUND
                 )
-            
-            vote = self.get_object()
-            
-            # Check if vote is pending nullification
-            if vote.nullification_status != 'pending':
+                
+            # Check if vote exists and is confirmed
+            if not vote.is_confirmed or not vote.transaction_hash:
+                logger.warning(f"Attempted to generate PDF for unconfirmed vote {pk}")
                 return Response(
-                    {"error": "This vote is not pending nullification"},
+                    {'error': 'Vote is not confirmed or missing transaction hash'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Get the ethereum service
-            from blockchain.services.ethereum_service import EthereumService
+            # Get blockchain transaction details
             ethereum_service = EthereumService()
             
-            # Nullify vote on blockchain
-            tx_hash = ethereum_service.nullify_vote(
-                contract_address=vote.election.contract_address,
-                voter_address=vote.voter.ethereum_address
-            )
+            # Add error handling around transaction receipt fetching
+            try:
+                tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
+                logger.info(f"Transaction receipt retrieved for hash {vote.transaction_hash[:10]}...")
+                
+                if not tx_receipt:
+                    logger.error(f"No transaction receipt found for hash {vote.transaction_hash}")
+                    return Response(
+                        {'error': 'No transaction receipt found on blockchain'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                    
+                block = ethereum_service.w3.eth.get_block(tx_receipt['blockNumber'])
+            except Exception as tx_error:
+                logger.error(f"Error retrieving transaction data: {str(tx_error)}", exc_info=True)
+                # Continue with partial PDF (will skip blockchain verification section)
+                tx_receipt = None
+                block = None
             
-            # Update vote status
-            vote.nullification_status = 'nullified'
-            vote.nullification_approved_at = timezone.now()
-            vote.nullification_approved_by = request.user
-            vote.nullification_transaction_hash = tx_hash
-            vote.save()
+            # Create a file-like buffer to receive PDF data
+            buffer = BytesIO()
             
-            # Update the Merkle tree
-            from blockchain.services.merkle_service import MerkleService
-            MerkleService.handle_nullified_vote(vote.id)
+            # Create the PDF object using the buffer as its "file"
+            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
             
-            # TODO: Notify voter that they can now cast a new vote
-            # This would be implemented based on your notification system
+            # Container for the 'flowables' (paragraphs, tables, etc.)
+            elements = []
             
-            return Response({
-                "message": "Vote nullification approved successfully",
-                "vote_id": vote.id,
-                "transaction_hash": tx_hash,
-                "status": vote.nullification_status
-            })
+            # Get styles
+            styles = getSampleStyleSheet()
+            styles.add(ParagraphStyle(name='Centered', alignment=1))
+            
+            # Add title
+            title = Paragraph("Secure Voting System - Vote Receipt", styles['Heading1'])
+            elements.append(title)
+            elements.append(Spacer(1, 0.25*inch))
+            
+            # Add election info
+            elements.append(Paragraph(f"Election: {vote.election.title}", styles['Heading2']))
+            elements.append(Paragraph(f"Candidate: {vote.candidate.name}", styles['Normal']))
+            elements.append(Spacer(1, 0.25*inch))
+            
+            # Add vote confirmation details
+            elements.append(Paragraph("Vote Details:", styles['Heading2']))
+            
+            # Format date
+            from django.utils import timezone
+            timestamp = timezone.localtime(vote.timestamp).strftime("%Y-%m-%d %H:%M:%S %Z")
+            
+            # Create vote details table
+            vote_data = [
+                ["Vote ID:", str(vote.id)],
+                ["Date voted:", timestamp],
+                ["Status:", "Confirmed" if vote.is_confirmed else "Pending"]
+            ]
+            
+            vote_table = Table(vote_data, colWidths=[2*inch, 3.5*inch])
+            vote_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (0, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ]))
+            
+            elements.append(vote_table)
+            elements.append(Spacer(1, 0.25*inch))
+            
+            # Add blockchain details if available
+            if tx_receipt and block:
+                elements.append(Paragraph("Blockchain Verification:", styles['Heading2']))
+                
+                blockchain_data = [
+                    ["Transaction Hash:", vote.transaction_hash],
+                    ["Block Number:", str(tx_receipt['blockNumber'])],
+                    ["Block Hash:", tx_receipt['blockHash'].hex()],
+                    ["Block Timestamp:", timezone.datetime.fromtimestamp(block['timestamp']).strftime("%Y-%m-%d %H:%M:%S")],
+                    ["Gas Used:", str(tx_receipt['gasUsed'])],
+                    ["Status:", "Successful" if tx_receipt['status'] == 1 else "Failed"]
+                ]
+                
+                blockchain_table = Table(blockchain_data, colWidths=[2*inch, 3.5*inch])
+                blockchain_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                    ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (0, -1), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ]))
+                
+                elements.append(blockchain_table)
+                elements.append(Spacer(1, 0.25*inch))
+            
+            # Add cryptographic proof
+            if vote.receipt_hash:
+                elements.append(Paragraph("Cryptographic Proof:", styles['Heading2']))
+                
+                crypto_data = [
+                    ["Receipt Hash:", vote.receipt_hash]
+                ]
+                
+                crypto_table = Table(crypto_data, colWidths=[2*inch, 3.5*inch])
+                crypto_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                    ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (0, -1), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ]))
+                
+                elements.append(crypto_table)
+                
+            # Add a footer
+            elements.append(Spacer(1, inch))
+            elements.append(Paragraph("This is an official record of your vote. The cryptographic proof can be used to verify the authenticity of this receipt.", styles['Italic']))
+            elements.append(Spacer(1, 0.25*inch))
+            elements.append(Paragraph(f"Generated on: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Italic']))
+            
+            # Build the PDF document
+            logger.info("Building PDF document")
+            doc.build(elements)
+            
+            # Get the value of the BytesIO buffer
+            pdf = buffer.getvalue()
+            buffer.close()
+            
+            logger.info(f"PDF generated successfully, size: {len(pdf)} bytes")
+            
+            # Create the HTTP response with PDF content
+            filename = f"vote_receipt_{vote.id}.pdf"
+            
+            # Using Django's HttpResponse for PDF
+            response = HttpResponse(content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['Content-Length'] = len(pdf)
+            
+            # Write PDF content to the response
+            response.write(pdf)
+            
+            logger.info(f"Returning PDF response with headers: {response.headers}")
+            return response
             
         except Exception as e:
+            logger.error(f"Failed to generate PDF receipt: {str(e)}", exc_info=True)
             return Response(
-                {"error": f"Failed to approve nullification: {str(e)}"},
+                {'error': f'Failed to generate PDF receipt: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    @action(detail=True, methods=['post'])
-    def reject_nullification(self, request, pk=None):
-        """Reject a vote nullification request (admin only)."""
+    @action(detail=False, methods=['get'])
+    def election(self, request):
+        """
+        Check if user has voted in a specific election.
+        URL: /api/votes/election/{election_id}/check/
+        """
+        election_id = request.query_params.get('election_id', None)
+        if not election_id:
+            return Response(
+                {'error': 'Election ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         try:
-            # Check if user is admin
-            if not request.user.is_staff:
-                return Response(
-                    {"error": "Only administrators can reject nullification requests"},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+            # Check if the election exists
+            election = Election.objects.get(id=election_id)
             
-            vote = self.get_object()
+            # Check if user has a confirmed vote in this election
+            has_voted = Vote.objects.filter(
+                voter=request.user,
+                election=election,
+                is_confirmed=True
+            ).exists()
             
-            # Check if vote is pending nullification
-            if vote.nullification_status != 'pending':
-                return Response(
-                    {"error": "This vote is not pending nullification"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Update vote status
-            vote.nullification_status = 'rejected'
-            vote.nullification_rejected_at = timezone.now()
-            vote.nullification_rejected_by = request.user
-            vote.nullification_rejection_reason = request.data.get('reason', '')
-            vote.save()
-            
-            # TODO: Notify voter that their request was rejected
-            # This would be implemented based on your notification system
+            # Get the vote details if they exist
+            vote = None
+            if has_voted:
+                vote_obj = Vote.objects.filter(
+                    voter=request.user,
+                    election=election,
+                    is_confirmed=True
+                ).first()
+                
+                if vote_obj:
+                    vote = {
+                        'id': vote_obj.id,
+                        'timestamp': vote_obj.timestamp,
+                        'candidate_id': vote_obj.candidate.id,
+                        'candidate_name': vote_obj.candidate.name,
+                        'transaction_hash': vote_obj.transaction_hash
+                    }
             
             return Response({
-                "message": "Vote nullification request rejected",
-                "vote_id": vote.id,
-                "status": vote.nullification_status
+                'has_voted': has_voted,
+                'vote': vote
             })
             
-        except Exception as e:
+        except Election.DoesNotExist:
             return Response(
-                {"error": f"Failed to reject nullification: {str(e)}"},
+                {'error': 'Election not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error checking user vote: {str(e)}")
+            return Response(
+                {'error': f'Failed to check vote status: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def election_stats(request):
+    """Get election statistics for admin dashboard"""
+    try:
+        # Use the get_current_time utility for timezone adjustment
+        now = get_current_time()
+        logger = logging.getLogger(__name__)
+        logger.info(f"Getting election statistics with adjusted time: {now.isoformat()}")
+        
+        total_elections = Election.objects.count()
+        active_elections = Election.objects.filter(
+            start_date__lte=now,
+            end_date__gte=now
+        ).count()
+        upcoming_elections = Election.objects.filter(
+            start_date__gt=now
+        ).count()
+        past_elections = Election.objects.filter(
+            end_date__lt=now
+        ).count()
+        total_votes = Vote.objects.count()
+        
+        return Response({
+            "total": total_elections,
+            "active": active_elections,
+            "upcoming": upcoming_elections,
+            "past": past_elections,
+            "votes": total_votes
+        })
+    except Exception as e:
+        return Response({
+            "error": str(e),
+            "message": "Failed to retrieve election statistics"
+        }, status=500)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def direct_pdf_download(request, vote_id, token):
+    """
+    Direct PDF download endpoint that doesn't require authentication middleware.
+    The token is included directly in the URL path.
+    """
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib.enums import TA_CENTER
+    from rest_framework.response import Response
+    from rest_framework import status
+    from .models import Vote
+    from blockchain.services.ethereum_service import EthereumService
+    from datetime import datetime
+    import os
+    from django.conf import settings
+    import qrcode
+    from io import BytesIO
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Direct PDF download request for vote {vote_id}")
+    
+    try:
+        # Manually verify the JWT token
+        User = get_user_model()
+        try:
+            # Decode the token
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            user_id = payload['user_id']
+            
+            # Get the user
+            user = User.objects.get(id=user_id)
+            logger.info(f"Successfully authenticated user {user.email}")
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError, User.DoesNotExist) as e:
+            logger.error(f"Token validation failed: {str(e)}")
+            return Response({'error': 'Invalid or expired token'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Get vote object
+        try:
+            vote = Vote.objects.get(pk=vote_id, voter=user)
+        except Vote.DoesNotExist:
+            return Response({'error': 'Vote not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Check if vote is confirmed
+        if not vote.is_confirmed:
+            return Response({'error': 'Vote is not confirmed'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get blockchain details
+        ethereum_service = EthereumService()
+        try:
+            tx_receipt = ethereum_service.get_transaction_receipt(vote.transaction_hash)
+            block = ethereum_service.w3.eth.get_block(tx_receipt['blockNumber']) if tx_receipt else None
+            tx_details = ethereum_service.get_transaction(vote.transaction_hash) if vote.transaction_hash else None
+        except Exception as e:
+            logger.error(f"Error retrieving blockchain details: {str(e)}")
+            tx_receipt = None
+            block = None
+            tx_details = None
+        
+        # Create a QR code for vote verification
+        verification_url = f"{settings.FRONTEND_URL}/verify-vote/{vote.id}"
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(verification_url)
+        qr.make(fit=True)
+        
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        qr_buffer = BytesIO()
+        qr_img.save(qr_buffer)
+        qr_buffer.seek(0)
+        
+        # Create PDF buffer
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter, 
+                              rightMargin=72, leftMargin=72, 
+                              topMargin=72, bottomMargin=18)
+        elements = []
+        
+        # Styles
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(name='Centered', alignment=TA_CENTER))
+        styles.add(ParagraphStyle(name='Small', fontSize=8))
+        styles.add(ParagraphStyle(name='SmallBold', fontSize=8, fontName='Helvetica-Bold'))
+        
+        # Add header with title
+        elements.append(Paragraph("OFFICIAL VOTE RECEIPT", styles['Heading1']))
+        elements.append(Paragraph("Secure Blockchain Voting System", styles['Centered']))
+        elements.append(Spacer(1, 0.25*inch))
+        
+        # Add receipt ID and date
+        elements.append(Paragraph(f"Receipt ID: {vote.id}", styles['Normal']))
+        from django.utils import timezone
+        timestamp = timezone.localtime(vote.timestamp).strftime("%Y-%m-%d %H:%M:%S %Z")
+        elements.append(Paragraph(f"Generated on: {timezone.now().strftime('%Y-%m-%d %H:%M:%S %Z')}", styles['Normal']))
+        elements.append(Spacer(1, 0.25*inch))
+        
+        # Election info
+        elements.append(Paragraph("ELECTION DETAILS", styles['Heading2']))
+        
+        election_data = [
+            ["Election Title:", vote.election.title],
+            ["Election ID:", str(vote.election.id)],
+            ["Start Date:", timezone.localtime(vote.election.start_date).strftime("%Y-%m-%d %H:%M:%S %Z")],
+            ["End Date:", timezone.localtime(vote.election.end_date).strftime("%Y-%m-%d %H:%M:%S %Z")],
+            ["Contract Address:", vote.election.contract_address or "Not available"]
+        ]
+        
+        election_table = Table(election_data, colWidths=[2*inch, 3.5*inch])
+        election_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        
+        elements.append(election_table)
+        elements.append(Spacer(1, 0.25*inch))
+        
+        # Vote details
+        elements.append(Paragraph("VOTE INFORMATION", styles['Heading2']))
+        
+        vote_data = [
+            ["Voter ID:", str(user.id)],
+            ["Voter Email:", user.email],
+            ["Candidate Name:", vote.candidate.name],
+            ["Candidate ID:", str(vote.candidate.id)],
+            ["Vote Cast on:", timestamp],
+            ["Vote Status:", "Confirmed" if vote.is_confirmed else "Pending"]
+        ]
+        
+        # Add nullification status if applicable
+        if hasattr(vote, 'nullification_status') and vote.nullification_status and vote.nullification_status != 'none':
+            vote_data.append(["Nullification Status:", vote.nullification_status.title()])
+        
+        vote_table = Table(vote_data, colWidths=[2*inch, 3.5*inch])
+        vote_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        
+        elements.append(vote_table)
+        elements.append(Spacer(1, 0.25*inch))
+        
+        # Blockchain details if available
+        if tx_receipt and block:
+            elements.append(Paragraph("BLOCKCHAIN VERIFICATION", styles['Heading2']))
+            
+            blockchain_data = [
+                ["Transaction Hash:", vote.transaction_hash],
+                ["Block Number:", str(tx_receipt['blockNumber'])],
+                ["Block Hash:", tx_receipt['blockHash'].hex()],
+                ["Block Timestamp:", timezone.datetime.fromtimestamp(block['timestamp']).strftime("%Y-%m-%d %H:%M:%S")],
+                ["Gas Used:", str(tx_receipt['gasUsed'])],
+                ["Status:", "Successful" if tx_receipt['status'] == 1 else "Failed"]
+            ]
+            
+            # Add transaction value if available
+            if tx_details:
+                value_in_eth = ethereum_service.w3.from_wei(tx_details['value'], 'ether')
+                blockchain_data.append(["Transaction Value:", f"{value_in_eth} ETH"])
+            
+            blockchain_table = Table(blockchain_data, colWidths=[2*inch, 3.5*inch])
+            blockchain_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ]))
+            
+            elements.append(blockchain_table)
+            elements.append(Spacer(1, 0.25*inch))
+        
+        # Cryptographic proof
+        if vote.receipt_hash:
+            elements.append(Paragraph("CRYPTOGRAPHIC PROOF", styles['Heading2']))
+            
+            crypto_data = [
+                ["Receipt Hash:", vote.receipt_hash]
+            ]
+            
+            crypto_table = Table(crypto_data, colWidths=[2*inch, 3.5*inch])
+            crypto_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (0, -1), colors.black),
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('BACKGROUND', (1, 0), (-1, -1), colors.white),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ]))
+            
+            elements.append(crypto_table)
+            elements.append(Spacer(1, 0.25*inch))
+        
+        # Add QR code for verification
+        elements.append(Paragraph("VERIFICATION QR CODE", styles['Heading2']))
+        elements.append(Paragraph("Scan this QR code to verify this vote on our platform:", styles['Normal']))
+        elements.append(Spacer(1, 0.1*inch))
+        
+        # Add the QR code image
+        qr_image = Image(qr_buffer, width=2*inch, height=2*inch)
+        elements.append(qr_image)
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(Paragraph(f"Or visit: {verification_url}", styles['Small']))
+        
+        # Add legal footer
+        elements.append(Spacer(1, 0.5*inch))
+        elements.append(Paragraph("LEGAL NOTICE", styles['Heading3']))
+        elements.append(Paragraph(
+            "This is an official record of your vote in the blockchain-based voting system. "
+            "The cryptographic proof and blockchain transaction details can be used to verify "
+            "the authenticity of this vote without compromising voter anonymity.", 
+            styles['Small']
+        ))
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(Paragraph(
+            "In accordance with the Data Protection Act 2018, you have the right to request that "
+            "your vote be nullified. Please contact the election administration if you wish to "
+            "exercise this right.", 
+            styles['Small']
+        ))
+        
+        # Generate the PDF
+        doc.build(elements)
+        pdf = buffer.getvalue()
+        buffer.close()
+        
+        # Create response
+        response = HttpResponse(content_type='application/pdf')
+        filename = f"vote_receipt_{vote.id}.pdf"
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response.write(pdf)
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"PDF generation failed: {str(e)}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -89,9 +89,45 @@ class UserDetailSerializer(serializers.ModelSerializer):
     Serializer for user details, now using the merged User model.
     Previously named UserProfileSerializer before the User/UserProfile model merge.
     """    
+    is_admin = serializers.SerializerMethodField()
+    role = serializers.CharField(read_only=True)
+    # Add fields for wallet information
+    ethereum_address = serializers.CharField(read_only=True)
+    wallet_balance = serializers.SerializerMethodField()
+    private_key_last_four = serializers.SerializerMethodField()
+    
     class Meta:
         model = User
         fields = ['email', 'full_name', 'government_id', 'government_id_type', 'phone_number',
                  'address', 'postal_code', 'city', 'country', 'is_verified', 
-                 'is_eligible_to_vote', 'can_vote', 'cooldown_end_date']
-        read_only_fields = ['email', 'government_id', 'is_verified', 'is_eligible_to_vote', 'cooldown_end_date']
+                 'is_eligible_to_vote', 'can_vote', 'cooldown_end_date', 'is_admin', 'role',
+                 'ethereum_address', 'wallet_balance', 'private_key_last_four']
+        read_only_fields = ['email', 'government_id', 'is_verified', 'is_eligible_to_vote', 
+                           'cooldown_end_date', 'is_admin', 'role', 'ethereum_address', 
+                           'wallet_balance', 'private_key_last_four']
+    
+    def get_is_admin(self, obj):
+        return obj.is_staff or obj.is_superuser
+    
+    def get_wallet_balance(self, obj):
+        """Get the Ethereum wallet balance in ETH."""
+        if hasattr(obj, 'ethereum_address') and obj.ethereum_address:
+            # Import here to prevent circular imports
+            try:
+                from blockchain.services.ethereum_service import EthereumService
+                service = EthereumService()
+                balance_wei = service.w3.eth.get_balance(obj.ethereum_address)
+                return service.w3.from_wei(balance_wei, 'ether')
+            except Exception as e:
+                # Log the error but don't break the API
+                import logging
+                logging.error(f"Error fetching wallet balance: {str(e)}")
+                return 0
+        return 0
+    
+    def get_private_key_last_four(self, obj):
+        """Return only the last 4 characters of the private key."""
+        if hasattr(obj, 'ethereum_private_key') and obj.ethereum_private_key:
+            # Return only the last 4 characters
+            return obj.ethereum_private_key[-4:] if len(obj.ethereum_private_key) >= 4 else ''
+        return ''

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from django.core.management.base import BaseCommand
 from verification.models import VerificationUser
 from django.utils import timezone
+from django.db import connections
 import uuid
 
 class Command(BaseCommand):
@@ -15,13 +16,13 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f'Generating {count} verified users...'))
         
         # Check if the table exists in the database before trying to delete
-        from django.db import connections
         cursor = connections['auth_db'].cursor()
         
         try:
             # Try to create the table if it doesn't exist
             self.stdout.write(self.style.WARNING('Ensuring verification_users table exists...'))
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS verification_users (
                     id UUID PRIMARY KEY,
                     full_name VARCHAR(100) NOT NULL,
@@ -37,7 +38,8 @@ class Command(BaseCommand):
                     is_eligible_voter BOOLEAN NOT NULL DEFAULT TRUE,
                     verification_date TIMESTAMP WITH TIME ZONE NOT NULL
                 )
-            """)
+            """
+            )
             connections['auth_db'].commit()
             
             self.stdout.write(self.style.SUCCESS('Table verified/created successfully'))
@@ -59,11 +61,65 @@ class Command(BaseCommand):
             'United Kingdom': ['London', 'Manchester', 'Birmingham', 'Edinburgh', 'Glasgow','Bristol', 'Leeds', 'Liverpool', 'Sheffield', 'Newcastle', 'Preston', 'Cardiff', 'Coventry', 'Nottingham', 'Belfast', 'Brighton', 'Southampton', 'Derby', 'Stoke-on-Trent', 'Wolverhampton'],
         }
         
+        # UK postcode prefixes for each city
+        uk_postcode_prefixes = {
+            'London': ['E', 'EC', 'N', 'NW', 'SE', 'SW', 'W', 'WC'],
+            'Manchester': ['M'],
+            'Birmingham': ['B'],
+            'Edinburgh': ['EH'],
+            'Glasgow': ['G'],
+            'Bristol': ['BS'],
+            'Leeds': ['LS'],
+            'Liverpool': ['L'],
+            'Sheffield': ['S'],
+            'Newcastle': ['NE'],
+            'Preston': ['PR'],
+            'Cardiff': ['CF'],
+            'Coventry': ['CV'],
+            'Nottingham': ['NG'],
+            'Belfast': ['BT'],
+            'Brighton': ['BN'],
+            'Southampton': ['SO'],
+            'Derby': ['DE'],
+            'Stoke-on-Trent': ['ST'],
+            'Wolverhampton': ['WV']
+        }
+        
+        # Generate realistic UK postcode
+        def generate_uk_postcode(city):
+            prefix = random.choice(uk_postcode_prefixes[city])
+            
+            # First part of postcode (outward code)
+            if len(prefix) == 1:
+                outward = f"{prefix}{random.randint(1, 99)}"
+            else:
+                outward = f"{prefix}{random.randint(1, 9)}"
+            
+            # Second part of postcode (inward code)
+            # Format: number + two letters
+            inward = f"{random.randint(0, 9)}{chr(random.randint(65, 90))}{chr(random.randint(65, 90))}"
+            
+            return f"{outward} {inward}"
+        
         # First names and last names for more realistic data
         first_names = ['James', 'John', 'Robert', 'Michael', 'William', 'David', 'Richard', 'Joseph', 'Thomas', 'Mary', 
                        'Patricia', 'Jennifer', 'Linda', 'Elizabeth', 'Susan', 'Jessica', 'Sarah', 'Karen']
         last_names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez', 
                      'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore']
+        
+        # Realistic UK street names
+        street_names = [
+            'High Street', 'Station Road', 'Church Street', 'Park Road', 'Victoria Road', 'Green Lane',
+            'Manor Road', 'Church Lane', 'Park Avenue', 'The Avenue', 'Queens Road', 'New Road',
+            'King Street', 'Main Street', 'Mill Lane', 'London Road', 'School Lane', 'Fairview Road', 
+            'Richmond Road', 'Windsor Road', 'York Road', 'Springfield Road', 'George Street',
+            'Victoria Street', 'Albert Road', 'Queens Avenue', 'Kings Road', 'Grange Road',
+            'Highfield Road', 'Mill Road', 'Alexander Road', 'The Crescent', 'Meadow Lane',
+            'The Green', 'Grove Road', 'Bridge Road', 'West Street', 'North Street', 'East Street', 
+            'South Street', 'St. John\'s Road', 'Oxford Street', 'Regent Street', 'Kensington Road',
+            'Piccadilly', 'Abbey Road', 'Baker Street', 'Bond Street', 'Carnaby Street',
+            'Downing Street', 'Fleet Street', 'Jermyn Street', 'Lombard Street', 'Savile Row', 'Shaftesbury Avenue'
+        ]
         
         users_created = 0
         
@@ -81,6 +137,9 @@ class Command(BaseCommand):
                 country = random.choice(countries)
                 city = random.choice(cities[country])
                 
+                # Generate a realistic UK postcode based on the city
+                postal_code = generate_uk_postcode(city)
+                
                 # Generate a somewhat realistic government ID
                 gov_id_type = random.choice(government_id_types)
                 if gov_id_type == 'PASSPORT':
@@ -94,7 +153,10 @@ class Command(BaseCommand):
                 email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@example.com"
                 
                 # Generate a phone number
-                phone = f"+{random.randint(1, 99)}{random.randint(1000000000, 9999999999)}"
+                phone = f"+44{random.randint(1000000000, 9999999999)}"
+                
+                # Generate a realistic address with random house number and street name
+                address = f"{random.randint(1, 999)} {random.choice(street_names)}"
                 
                 # Create the verified user                
                 user = VerificationUser(
@@ -103,8 +165,8 @@ class Command(BaseCommand):
                     date_of_birth=date_of_birth,
                     government_id=gov_id,
                     government_id_type=gov_id_type,
-                    address=f"{random.randint(1, 999)} {last_name} Street",
-                    postal_code=f"{random.randint(10000, 99999)}",
+                    address=address,
+                    postal_code=postal_code,
                     city=city,
                     country=country,
                     email=email,

@@ -7,11 +7,7 @@ from verification.signals import user_verified
 User = get_user_model()
 
 class VerificationService:
-    """
-    Service for verifying user details against the authentication database.
-    This is used during registration to ensure only legitimate users can create accounts.
-    """
-    
+
     @staticmethod
     def verify_user_details(
         full_name: str,
@@ -20,21 +16,6 @@ class VerificationService:
         phone_number: str,
         date_of_birth: Optional[str] = None
     ) -> Tuple[bool, Dict[str, str]]:
-        """
-        Verify user details against the authentication database.
-        
-        Args:
-            full_name: The full name of the user
-            government_id: Government-issued ID number
-            email: User's email address
-            phone_number: User's phone number
-            date_of_birth: User's date of birth (optional)
-            
-        Returns:
-            Tuple containing:
-                - Boolean indicating if verification passed
-                - Dictionary with error messages for failed fields
-        """
         errors = {}
         
         # Try to find a matching user record

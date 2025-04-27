@@ -23,7 +23,7 @@ class VerificationUser(models.Model):
     
     class Meta:
         db_table = 'verification_users'
-        managed = True
+        managed = False  # Set to False to prevent Django from trying to create/alter this table
         app_label = 'verification'
         db_tablespace = 'auth_db'
         verbose_name = 'Verified User'

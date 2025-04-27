@@ -21,4 +21,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),
     path('api/verification/', include('verification.urls')),
+    path('api/', include('blockchain.urls')),  # Include blockchain URLs with api/ prefix
 ]

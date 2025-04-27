@@ -2,16 +2,25 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 from web3 import Web3
 from web3.contract import Contract
 from web3.exceptions import TransactionNotFound
 from web3.middleware import geth_poa_middleware
 from eth_account.account import Account
 from eth_account.signers.local import LocalAccount
+
 from django.conf import settings
 from django.utils import timezone
-import datetime
+
+from blockchain.utils.time_utils import (
+    get_current_time, 
+    system_to_blockchain_time, 
+    blockchain_to_system_time, 
+    datetime_to_blockchain_timestamp
+)
 
 logger = logging.getLogger(__name__)
 
@@ -415,19 +424,20 @@ class EthereumService:
         contract = self.get_contract_instance(contract_address)
         if not contract:
             raise ValueError("Could not get contract instance")
-              # Call contract function
+            
+        # Call contract function
         info = contract.functions.getElectionInfo().call()
         
         # Get blockchain times
         start_time_blockchain = info[2]
         end_time_blockchain = info[3]
         
-        # Adjust times coming FROM blockchain by adding one hour (3600 seconds)
-        start_time_adjusted = start_time_blockchain + 3600
-        end_time_adjusted = end_time_blockchain + 3600
+        # Convert blockchain times to system times using our standardized utility function
+        start_time_adjusted = blockchain_to_system_time(start_time_blockchain)
+        end_time_adjusted = blockchain_to_system_time(end_time_blockchain)
         
         # Log the time adjustment for debugging
-        logger.info(f"Adjusting blockchain times to system times (+1 hour):")
+        logger.info(f"Converting blockchain times to system times:")
         logger.info(f"  Blockchain start: {start_time_blockchain} → System adjusted: {start_time_adjusted}")
         logger.info(f"  Blockchain end: {end_time_blockchain} → System adjusted: {end_time_adjusted}")
         
@@ -753,39 +763,28 @@ class EthereumService:
             
         # Call contract functions to get details
         try:
-            # Get current SYSTEM time instead of blockchain time
-            current_timestamp = int(time.time())
-            current_datetime = datetime.datetime.fromtimestamp(current_timestamp)
+            # Get current SYSTEM time using utility function (returns datetime)
+            current_time = get_current_time()
             
-            # For logging purposes, also get blockchain time
-            latest_block = self.w3.eth.get_block('latest')
-            block_timestamp = latest_block.timestamp
-            block_datetime = datetime.datetime.fromtimestamp(block_timestamp)
+            # Convert current datetime to timestamp for comparison with blockchain timestamps
+            current_timestamp = int(current_time.timestamp())
             
-            # Get contract start and end times
+            # Get contract start and end times (these are integers/timestamps)
             start_time_blockchain = contract.functions.startTime().call()
             end_time_blockchain = contract.functions.endTime().call()
             
-            # Adjust times coming FROM blockchain by adding one hour (3600 seconds)
-            start_time = start_time_blockchain + 3600
-            end_time = end_time_blockchain + 3600
+            # Convert blockchain timestamps to datetime objects for logging
+            start_time = blockchain_to_system_time(start_time_blockchain)
+            end_time = blockchain_to_system_time(end_time_blockchain)
             
-            # Convert to datetime objects for better logging
-            start_datetime = datetime.datetime.fromtimestamp(start_time)
-            end_datetime = datetime.datetime.fromtimestamp(end_time)
-            start_blockchain_datetime = datetime.datetime.fromtimestamp(start_time_blockchain)
-            
-            # Check if election is active based on current system time compared to blockchain times
-            # We compare current system time to blockchain contract times, not adjusted times
+            # Check if election is active based on timestamp comparison
             is_active = current_timestamp >= start_time_blockchain and current_timestamp <= end_time_blockchain
             
             # Log detailed information for debugging timezone issues
             logger.info(f"Election at {contract_address} active status check:")
-            logger.info(f"  Current system time: {current_timestamp} ({current_datetime} UTC)")
-            logger.info(f"  Blockchain time: {block_timestamp} ({block_datetime} UTC)")
-            logger.info(f"  Blockchain start time: {start_time_blockchain} ({start_blockchain_datetime} UTC)")
-            logger.info(f"  System adjusted start: {start_time} ({start_datetime} UTC) [+1 hour]")
-            logger.info(f"  System adjusted end: {end_time} ({end_datetime} UTC) [+1 hour]")
+            logger.info(f"  Current system time: {current_time} (timestamp: {current_timestamp})")
+            logger.info(f"  Blockchain start time: {start_time_blockchain} → System adjusted: {start_time}")
+            logger.info(f"  Blockchain end time: {end_time_blockchain} → System adjusted: {end_time}")
             logger.info(f"  Is active: {is_active}")
             logger.info(f"  Time conditions: {current_timestamp >= start_time_blockchain} AND {current_timestamp <= end_time_blockchain}")
             
@@ -968,7 +967,7 @@ class EthereumService:
                 }
             }
     
-    def nullify_vote(self, contract_address, voter_address):
+    def nullify_vote(self, contract_address, voter_address, admin_private_key=None):
         """
         Nullify a vote for a voter in an election contract.
         This allows the voter to cast another vote in compliance with DPA 2018.
@@ -976,29 +975,38 @@ class EthereumService:
         Args:
             contract_address (str): The address of the election contract
             voter_address (str): The address of the voter whose vote should be nullified
+            admin_private_key (str, optional): Admin's private key. If not provided, will try to get from env var.
             
         Returns:
             str: The transaction hash of the nullification transaction
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             # Get the contract
             contract = self.get_election_contract(contract_address)
             
-            # Get admin's private key from environment
-            admin_private_key = os.getenv('ADMIN_WALLET_PRIVATE_KEY')
+            # Get admin's private key - first try the provided key, then fallback to environment variable
             if not admin_private_key:
-                raise ValueError("Admin wallet private key not found in environment variables")
+                admin_private_key = os.getenv('ADMIN_WALLET_PRIVATE_KEY')
+                if not admin_private_key:
+                    # Log the error for debugging
+                    logger.error("Admin wallet private key not found in environment variables")
+                    raise ValueError("Admin wallet private key not found in environment variables or parameters")
             
             # Ensure it has 0x prefix
             if not admin_private_key.startswith('0x'):
                 admin_private_key = '0x' + admin_private_key
                 
+            # Log admin address for debugging (safe to log)
+            admin_address = self.w3.eth.account.from_key(admin_private_key).address
+            logger.info(f"Using admin account with address: {admin_address}")
+                
             # Build transaction for nullifying vote
             tx = contract.functions.nullifyVote(voter_address).build_transaction({
-                'from': self.w3.eth.account.from_key(admin_private_key).address,
-                'nonce': self.w3.eth.get_transaction_count(
-                    self.w3.eth.account.from_key(admin_private_key).address
-                ),
+                'from': admin_address,
+                'nonce': self.w3.eth.get_transaction_count(admin_address),
                 'gas': 200000,  # Adjust gas as needed
                 'gasPrice': self.w3.eth.gas_price
             })
@@ -1011,11 +1019,75 @@ class EthereumService:
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
             
             if receipt['status'] == 0:
+                logger.error("Nullification transaction failed")
                 raise ValueError("Nullification transaction failed")
                 
             # Return transaction hash as hexstring
             return self.w3.to_hex(tx_hash)
             
         except Exception as e:
-            self.logger.error(f"Error nullifying vote: {str(e)}")
+            logger.error(f"Error nullifying vote: {str(e)}")
             raise
+    
+    def transfer_all_eth(self, from_address, to_address, private_key):
+        """
+        Transfer all ETH from one address to another, accounting for gas fees.
+        
+        Args:
+            from_address (str): The address to transfer from
+            to_address (str): The address to transfer to
+            private_key (str): Private key of the from_address
+        
+        Returns:
+            str: Transaction hash if successful, None otherwise
+        """
+        try:
+            # Get the current balance
+            balance = self.w3.eth.get_balance(from_address)
+            
+            # If balance is too low, don't try to transfer
+            if balance <= 21000 * self.w3.eth.gas_price:
+                logger.info(f"Balance too low to transfer: {balance} wei")
+                return None
+                
+            # Calculate gas cost for a standard ETH transfer
+            gas_limit = 21000  # Standard gas for simple ETH transfer
+            gas_price = self.w3.eth.gas_price
+            gas_cost = gas_limit * gas_price
+            
+            # Calculate amount to send (total balance minus gas cost)
+            amount_to_send = balance - gas_cost
+            
+            logger.info(f"Transferring {self.w3.from_wei(amount_to_send, 'ether')} ETH from {from_address} to {to_address}")
+            
+            # Ensure private key has 0x prefix
+            if not private_key.startswith('0x'):
+                private_key = '0x' + private_key
+            
+            # Prepare transaction
+            transaction = {
+                'to': to_address,
+                'value': amount_to_send,
+                'gas': gas_limit,
+                'gasPrice': gas_price,
+                'nonce': self.w3.eth.get_transaction_count(from_address),
+                'chainId': self.w3.eth.chain_id
+            }
+            
+            # Sign transaction
+            signed_tx = self.w3.eth.account.sign_transaction(transaction, private_key)
+            
+            # Send transaction
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            
+            # Wait for transaction receipt
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            
+            logger.info(f"ETH transfer complete. Transaction hash: {tx_hash.hex()}")
+            
+            return tx_hash.hex()
+        except Exception as e:
+            logger.error(f"Error transferring ETH: {str(e)}")
+            # Don't raise the exception, as we want key rotation to continue even if transfer fails
+            return None
+

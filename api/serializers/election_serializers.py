@@ -3,6 +3,12 @@ from api.models import Election, Candidate, Vote
 from django.utils import timezone                  
 import pytz
 from blockchain.services.ethereum_service import EthereumService
+from blockchain.utils.time_utils import (
+    get_current_time, 
+    system_to_blockchain_time, 
+    blockchain_to_system_time,
+    datetime_to_blockchain_timestamp
+)
 from django.conf import settings
 import logging
 
@@ -33,11 +39,13 @@ class CandidateSerializer(serializers.ModelSerializer):
 # Serializer for regular users (without blockchain details)
 class PublicElectionSerializer(serializers.ModelSerializer):
     candidates = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    results = serializers.SerializerMethodField()
     
     class Meta:
         model = Election
         fields = ['id', 'title', 'description', 'start_date', 'end_date', 
-                  'is_active', 'candidates', 'created_at']
+                  'is_active', 'candidates', 'status', 'results', 'created_at']
         read_only_fields = ['id', 'created_at']
     
     def get_candidates(self, obj):
@@ -50,6 +58,52 @@ class PublicElectionSerializer(serializers.ModelSerializer):
                 'description': candidate.description
             })
         return candidates_data
+
+    def get_status(self, obj):
+        now = get_current_time()
+        
+        # Debug logging to understand what's happening
+        logger = logging.getLogger(__name__)
+        logger.info(f"Calculating status for election {obj.id} ({obj.title})")
+        logger.info(f"  Current time: {now}")
+        logger.info(f"  Election start_date: {obj.start_date}")
+        logger.info(f"  Election end_date: {obj.end_date}")
+        logger.info(f"  Is active flag: {obj.is_active}")
+        
+        # Adjust the comparison times using standardized utility functions
+        adjusted_start_date = system_to_blockchain_time(obj.start_date)
+        adjusted_end_date = system_to_blockchain_time(obj.end_date)
+        
+        logger.info(f"  Adjusted start_date: {adjusted_start_date}")
+        logger.info(f"  Adjusted end_date: {adjusted_end_date}")
+        
+        if not obj.is_active:
+            logger.info(f"  Status: inactive (is_active flag is False)")
+            return "inactive"
+        elif adjusted_start_date > now:
+            logger.info(f"  Status: upcoming (adjusted_start_date > now)")
+            return "upcoming"
+        elif adjusted_end_date < now:
+            logger.info(f"  Status: completed (adjusted_end_date < now)")
+            return "completed"  # Changed from "closed" to "completed" to match frontend expectations
+        else:
+            logger.info(f"  Status: active (within adjusted time range)")
+            return "active"
+
+    def get_results(self, obj):
+        now = get_current_time()
+        # Apply the same timezone adjustment using standardized utility function
+        adjusted_end_date = system_to_blockchain_time(obj.end_date)
+        
+        if adjusted_end_date < now and obj.contract_address:
+            try:
+                ethereum_service = EthereumService()
+                return ethereum_service.get_election_results(obj.contract_address)
+            except Exception as e:
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to get election results: {str(e)}")
+                return None
+        return None
 
 # Full serializer with blockchain details for admins
 class ElectionSerializer(serializers.ModelSerializer):
@@ -133,31 +187,17 @@ class ElectionSerializer(serializers.ModelSerializer):
                 if private_key:                    # Initialize Ethereum service
                     ethereum_service = EthereumService()
                     
-                    # Convert datetime to Unix timestamps for the smart contract
-                    # Ensure we're using UTC timestamps to align with blockchain time
-                    # Convert to UTC, then get timestamp to ensure timezone alignment with blockchain
-                    start_time_utc = int(timezone.localtime(election.start_date, pytz.UTC).timestamp())
-                    end_time_utc = int(timezone.localtime(election.end_date, pytz.UTC).timestamp())
+                    # Convert datetime to blockchain timestamps using standardized utility function
+                    start_time = datetime_to_blockchain_timestamp(election.start_date)
+                    end_time = datetime_to_blockchain_timestamp(election.end_date)
                     
                     # Log the timestamps for debugging
                     logger.info(f"Converting election times to blockchain UTC timestamps:")
-                    logger.info(f"  Original start: {election.start_date} → UTC timestamp: {start_time_utc}")
-                    logger.info(f"  Original end: {election.end_date} → UTC timestamp: {end_time_utc}")
-                    
-                    # Adjust start time by subtracting one hour (3600 seconds) as per requirement
-                    adjusted_start_time = start_time_utc - 3600
-                    
-                    # Use the adjusted start time and original end time
-                    start_time = adjusted_start_time
-                    end_time = end_time_utc
-                    
-                    # Log the adjusted timestamp
-                    logger.info(f"  Adjusted start for blockchain: {adjusted_start_time} (one hour earlier)")
+                    logger.info(f"  Original start: {election.start_date} → Blockchain timestamp: {start_time}")
+                    logger.info(f"  Original end: {election.end_date} → Blockchain timestamp: {end_time}")
                     
                     # Validate private key before using it
                     if not private_key:
-                        import logging
-                        logger = logging.getLogger(__name__)
                         logger.error(f"Cannot deploy contract for election {election.id}: No valid private key found")
                         raise ValueError("No valid private key available for contract deployment")
                       # Get the account address from the private key
@@ -213,8 +253,6 @@ class ElectionSerializer(serializers.ModelSerializer):
                         election.save(update_fields=['is_active'])
             except Exception as e:
                 # Log error but don't fail creation
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.error(f"Failed to deploy contract for election {election.id}: {e}")
                 
         return election
@@ -243,9 +281,17 @@ class VoteSerializer(serializers.ModelSerializer):
         except Candidate.DoesNotExist:
             raise serializers.ValidationError({"candidate_id": "Candidate not found for this election."})
         
-        # Check if election is active
+        # Check if election is active using standardized time utility functions
+        now = get_current_time()
+        adjusted_start_date = system_to_blockchain_time(election.start_date)
+        adjusted_end_date = system_to_blockchain_time(election.end_date)
+        
         if not election.is_active:
             raise serializers.ValidationError({"election_id": "This election is not active."})
+        elif adjusted_start_date > now:
+            raise serializers.ValidationError({"election_id": "This election has not started yet."})
+        elif adjusted_end_date < now:
+            raise serializers.ValidationError({"election_id": "This election has already ended."})
         
         # Check if user has already voted in this election
         if Vote.objects.filter(voter=user, election=election).exists():
@@ -281,15 +327,20 @@ class VoteSerializer(serializers.ModelSerializer):
         return vote
 
 class VoteReceiptSerializer(serializers.ModelSerializer):
-    election_title = serializers.CharField(source='election.title', read_only=True)
-    candidate_name = serializers.CharField(source='candidate.name', read_only=True)
+    election = PublicElectionSerializer(read_only=True)
+    candidate = CandidateSerializer(read_only=True)
+    verified = serializers.SerializerMethodField()
     
     class Meta:
         model = Vote
-        fields = ['id', 'election_title', 'candidate_name', 'timestamp', 
-                  'transaction_hash', 'is_confirmed']
-        read_only_fields = ['id', 'election_title', 'candidate_name', 'timestamp', 
-                            'transaction_hash', 'is_confirmed']
+        fields = ['id', 'election', 'candidate', 'timestamp', 
+                  'transaction_hash', 'is_confirmed', 'verified']
+        read_only_fields = ['id', 'election', 'candidate', 'timestamp', 
+                            'transaction_hash', 'is_confirmed', 'verified']
+    
+    def get_verified(self, obj):
+        # A vote is considered verified if it has a transaction hash and is confirmed
+        return bool(obj.is_confirmed and obj.transaction_hash)
 
 class VoteConfirmationSerializer(serializers.Serializer):
     vote_id = serializers.UUIDField(required=True)

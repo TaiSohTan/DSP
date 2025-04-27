@@ -14,27 +14,6 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-class Election(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    title = models.CharField(max_length=255)
-    description = models.TextField()
-    start_date = models.DateTimeField()
-    end_date = models.DateTimeField()
-    status = models.CharField(max_length=50, blank=True, null=True)
-    is_published = models.BooleanField(default=False)
-    is_deployed = models.BooleanField(default=False)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='blockchain_created_elections')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-class Vote(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    voter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='blockchain_votes')
-    election = models.ForeignKey(Election, on_delete=models.CASCADE, related_name='votes')
-    transaction_hash = models.CharField(max_length=66, unique=True)
-    receipt_hash = models.CharField(max_length=64, unique=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
-
 class EthereumWallet(models.Model):
     """
     Model to store user's Ethereum wallet information.

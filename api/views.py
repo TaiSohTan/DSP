@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from django.core.cache import cache
+from .models import Election
 import logging 
 import uuid
 import json
@@ -22,6 +23,7 @@ from django.utils import timezone
 from datetime import timedelta
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAdminUser
+from django.db.models import Count, Sum, Avg
 from .models import Vote
 
 # Configure logger
@@ -31,6 +33,22 @@ handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
+# Helper function for cleanup of registration data
+def cleanup_registration_data(registration_id):
+    """
+    Helper function to clean up cached registration data.
+    Returns True if data was found and deleted, False otherwise.
+    """
+    if not registration_id:
+        return False
+        
+    cache_key = f"registration:{registration_id}"
+    if cache.get(cache_key):
+        cache.delete(cache_key)
+        logger.info(f"Cleaned up registration data for ID: {registration_id}")
+        return True
+    return False
 
 class UserRegistrationView(generics.CreateAPIView):
     """
@@ -44,6 +62,21 @@ class UserRegistrationView(generics.CreateAPIView):
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
+            # Check if user already exists with this email or government_id
+            email = serializer.validated_data.get('email')
+            government_id = serializer.validated_data.get('government_id')
+            
+            # Check if user with email or government_id already exists
+            if User.objects.filter(email=email).exists():
+                return Response({
+                    'email': ['A user with this email already exists.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+            if User.objects.filter(government_id=government_id).exists():
+                return Response({
+                    'government_id': ['A user with this government ID already exists.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
             # Generate a temporary registration ID
             registration_id = str(uuid.uuid4())
             
@@ -63,7 +96,14 @@ class UserRegistrationView(generics.CreateAPIView):
             }), timeout=600)  # 10 minutes
             
             # Send OTP to user's phone
-            OTPService.send_sms_otp(phone_number, purpose="registration")
+            success = OTPService.send_sms_otp(phone_number, purpose="registration")
+            
+            if not success:
+                # Clean up registration data if OTP sending fails
+                cleanup_registration_data(registration_id)
+                return Response({
+                    'error': 'Failed to send verification code. Please try again.'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
             return Response({
                 'message': 'Registration initiated successfully. Please verify your phone number with the OTP sent.',
@@ -105,21 +145,41 @@ class CompleteRegistrationView(APIView):
         
         # Verify the phone number matches
         if registration_info.get('phone_number') != phone_number:
+            # Keep registration data in cache (don't clean up yet)
             return Response({
                 'error': 'Phone number does not match registration data.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Verify OTP
         if not OTPService.verify_otp(phone_number, otp, is_email=False):
+            # Keep registration data in cache (don't clean up yet)
             return Response({
                 'error': 'Invalid or expired OTP.'
             }, status=status.HTTP_400_BAD_REQUEST)
-          # Create the user now that OTP is verified
-        try:
-            # Get the email and government_id from registration data
-            email = registration_data.get('email')
-            government_id = registration_data.get('government_id')
             
+        # Get the email and government_id from registration data
+        email = registration_data.get('email')
+        government_id = registration_data.get('government_id')
+        
+        # Check if user with email or government_id already exists
+        # (This could happen if someone registered between initial step and verification)
+        if User.objects.filter(email=email).exists():
+            # Clean up the registration data since it can't be used
+            cleanup_registration_data(registration_id)
+            return Response({
+                'error': 'A user with this email already exists. Please contact support if you need assistance.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        if User.objects.filter(government_id=government_id).exists():
+            # Clean up the registration data since it can't be used
+            cleanup_registration_data(registration_id)
+            return Response({
+                'error': 'A user with this government ID already exists. Please contact support if you need assistance.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Create the user now that OTP is verified
+        created_user = None
+        try:
             # Fetch the complete user details from the auth database
             from verification.models import VerificationUser
             try:
@@ -130,6 +190,8 @@ class CompleteRegistrationView(APIView):
                 ).first()
                 
                 if not auth_user:
+                    # Clean up registration data if verification fails
+                    cleanup_registration_data(registration_id)
                     return Response({
                         'error': 'User details not found in verification database. Please contact support.'
                     }, status=status.HTTP_400_BAD_REQUEST)
@@ -138,6 +200,8 @@ class CompleteRegistrationView(APIView):
                 logger.info(f"Auth user found: {auth_user.full_name}, ID: {auth_user.government_id}, Type: {auth_user.government_id_type}")
                 
             except Exception as e:
+                # Clean up registration data if verification fails
+                cleanup_registration_data(registration_id)
                 logger.error(f"Error fetching user from auth database: {str(e)}")
                 return Response({
                     'error': 'Error verifying user identity. Please try again later.'
@@ -152,7 +216,8 @@ class CompleteRegistrationView(APIView):
                 'phone_number': auth_user.phone_number,  # Use auth DB value
                 'is_verified': True  # User is verified from the start
             }
-              # Create the user with all data from auth database
+            
+            # Create the user with all data from auth database
             user_data.update({
                 'government_id_type': auth_user.government_id_type,  # Use correct type from auth DB
                 'address': auth_user.address,  # Copy address from auth DB
@@ -161,7 +226,9 @@ class CompleteRegistrationView(APIView):
                 'country': auth_user.country,  # Copy country from auth DB
                 'is_eligible_to_vote': auth_user.is_eligible_voter  # Use eligibility from auth DB
             })
-            user = User.objects.create_user(**user_data)
+            
+            # Create the user and store the reference for cleanup if later steps fail
+            created_user = User.objects.create_user(**user_data)
             
             # Create Ethereum wallet for the verified user
             try:
@@ -180,16 +247,16 @@ class CompleteRegistrationView(APIView):
                 encrypted_key = EthereumWallet._encrypt_private_key(private_key, wallet_password, salt)
                 
                 wallet = EthereumWallet.objects.create(
-                    user=user,
+                    user=created_user,
                     address=wallet_address,
                     encrypted_private_key=encrypted_key,
                     salt=salt
                 )
                 
                 # Update the user model with the wallet details
-                user.ethereum_address = wallet_address
-                user.ethereum_private_key = private_key
-                user.save(update_fields=['ethereum_address', 'ethereum_private_key'])
+                created_user.ethereum_address = wallet_address
+                created_user.ethereum_private_key = private_key
+                created_user.save(update_fields=['ethereum_address', 'ethereum_private_key'])
                 
                 # Fund the wallet with test ETH (for development/testing only)
                 if settings.DEBUG:
@@ -199,35 +266,43 @@ class CompleteRegistrationView(APIView):
                     else:
                         logger.warning(f"Failed to fund new user wallet {wallet_address}")
                 
-                logger.info(f"Created Ethereum wallet for user {user.id}: {wallet_address}")
+                logger.info(f"Created Ethereum wallet for user {created_user.id}: {wallet_address}")
                 
             except Exception as e:
                 # Log the error but don't prevent registration from completing
-                logger.error(f"Failed to create Ethereum wallet for user {user.id}: {str(e)}")
+                logger.error(f"Failed to create Ethereum wallet for user {created_user.id}: {str(e)}")
             
-            # Clear the cache entry
-            cache.delete(cache_key)
+            # Clear the cache entry - registration complete
+            cleanup_registration_data(registration_id)
             
             # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
+            refresh = RefreshToken.for_user(created_user)
             
             return Response({
                 'message': 'Registration completed successfully.',
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
                 'user': {
-                    'id': user.id,
-                    'email': user.email,
-                    'full_name': user.full_name,
+                    'id': created_user.id,
+                    'email': created_user.email,
+                    'full_name': created_user.full_name,
                 }
             })
             
         except Exception as e:
+            # Delete the user if created but errored during wallet creation or other steps
+            if created_user:
+                try:
+                    created_user.delete()
+                    logger.info(f"Cleaned up user {created_user.id} due to error during registration")
+                except Exception as delete_error:
+                    logger.error(f"Failed to clean up user after error: {str(delete_error)}")
+                    
+            # Don't delete the registration data to allow the user to retry verification
+            logger.error(f"Failed to complete registration: {str(e)}")
             return Response({
                 'error': f'Failed to create user account: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class UserLoginView(APIView):
     """
@@ -253,6 +328,8 @@ class UserLoginView(APIView):
                         'id': user.id,
                         'email': user.email,
                         'full_name': user.full_name,
+                        'is_admin': user.is_staff or user.is_superuser,
+                        'role': user.role,
                     }
                 })
             return Response(
@@ -393,8 +470,10 @@ class ResendRegistrationOTPView(APIView):
         phone_number = registration_info.get('phone_number')
         
         if not phone_number:
+            # Clean up the invalid registration data
+            cleanup_registration_data(registration_id)
             return Response({
-                'error': 'Phone number not found in registration data'
+                'error': 'Phone number not found in registration data. Please register again.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Reset the expiration time by storing the data again
@@ -411,8 +490,9 @@ class ResendRegistrationOTPView(APIView):
                 'expires_in': 600  # seconds
             })
         else:
+            # Don't clean up registration data on OTP sending failure to allow retrying
             return Response({
-                'error': 'Failed to send new OTP'
+                'error': 'Failed to send new OTP. Please try again.'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -510,11 +590,11 @@ class ResetPasswordView(APIView):
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
 def nullification_requests(request):
-    """Get all pending vote nullification requests."""
+    """Get all vote nullification requests."""
     election_id = request.query_params.get('election_id')
     
-    # Base query - get votes with nullification_status='pending'
-    query = Vote.objects.filter(nullification_status='pending')
+    # Base query - get votes with any nullification status (or filter if requested)
+    query = Vote.objects.exclude(nullification_status='none')
     
     # Filter by election if provided
     if election_id:
@@ -527,9 +607,10 @@ def nullification_requests(request):
     result = []
     for vote in query:
         result.append({
+            'id': vote.id,
             'vote_id': vote.id,
             'voter_id': vote.voter.id,
-            'voter_name': f"{vote.voter.first_name} {vote.voter.last_name}",
+            'voter_name': vote.voter.full_name,
             'voter_email': vote.voter.email,
             'election_id': vote.election.id,
             'election_title': vote.election.title,
@@ -538,6 +619,84 @@ def nullification_requests(request):
             'vote_timestamp': vote.timestamp,
             'requested_at': vote.nullification_requested_at,
             'reason': vote.nullification_reason,
+            'status': vote.nullification_status,
+            'admin_response': vote.nullification_rejection_reason if vote.nullification_status == 'rejected' else None,
         })
     
     return Response(result)
+
+class AdminDashboardView(APIView):
+    """
+    API view for admin dashboard statistics and data.
+    Only accessible to admin users.
+    """
+    permission_classes = [IsAdminUser]
+    
+    def get(self, request, *args, **kwargs):
+        # Get user statistics
+        total_users = User.objects.count()
+        verified_users = User.objects.filter(is_verified=True).count()
+        unverified_users = total_users - verified_users
+        admin_users = User.objects.filter(is_staff=True).count()
+        
+        # Get recent users (last 7 days)
+        recent_users = User.objects.filter(
+            date_joined__gte=timezone.now() - timedelta(days=7)
+        ).count()
+        
+        # Get election statistics
+        total_elections = Election.objects.count()
+        active_elections = Election.objects.filter(is_active=True).count()
+        upcoming_elections = Election.objects.filter(
+            start_date__gt=timezone.now(),
+            is_active=False
+        ).count()
+        past_elections = Election.objects.filter(
+            end_date__lt=timezone.now()
+        ).count()
+        
+        # Get vote statistics
+        total_votes = Vote.objects.count()
+        confirmed_votes = Vote.objects.filter(is_confirmed=True).count()
+        pending_votes = Vote.objects.filter(is_confirmed=False).count()
+        
+        # Get nullification statistics
+        pending_nullifications = Vote.objects.filter(nullification_status='pending').count()
+        approved_nullifications = Vote.objects.filter(nullification_status='nullified').count()
+        rejected_nullifications = Vote.objects.filter(nullification_status='rejected').count()
+        
+        # Get blockchain statistics
+        from blockchain.models import EthereumWallet, Transaction
+        total_wallets = EthereumWallet.objects.count()
+        total_transactions = Transaction.objects.count() if 'Transaction' in globals() else 0
+        
+        # Return all statistics
+        return Response({
+            'users': {
+                'total': total_users,
+                'verified': verified_users,
+                'unverified': unverified_users,
+                'admins': admin_users,
+                'recent': recent_users
+            },
+            'elections': {
+                'total': total_elections,
+                'active': active_elections,
+                'upcoming': upcoming_elections,
+                'past': past_elections
+            },
+            'votes': {
+                'total': total_votes,
+                'confirmed': confirmed_votes,
+                'pending': pending_votes
+            },
+            'nullifications': {
+                'pending': pending_nullifications,
+                'approved': approved_nullifications,
+                'rejected': rejected_nullifications
+            },
+            'blockchain': {
+                'wallets': total_wallets,
+                'transactions': total_transactions
+            }
+        })

@@ -3,7 +3,6 @@ class AuthRouter:
     A router to control database operations for the authentication database.
     This ensures that models in the verification app use the auth_db database.
     """
-    
     route_app_labels = {'verification'}
     
     def db_for_read(self, model, **hints):

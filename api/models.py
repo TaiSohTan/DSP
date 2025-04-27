@@ -1,9 +1,19 @@
+import logging
+import os
+import random
+import string
+import uuid
+
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.utils import timezone
-import uuid
-import random 
-import string
+from django.apps import apps
+
+from dotenv import load_dotenv, set_key
+
+# Remove direct import to avoid circular imports
+# from blockchain.models import EthereumWallet
+from blockchain.services.ethereum_service import EthereumService
 from .fields import AESEncryptedTextField, AESEncryptedCharField
 
 class CustomUserManager(BaseUserManager):
@@ -41,14 +51,11 @@ class CustomUserManager(BaseUserManager):
         user = self.create_user(email, government_id, full_name, password, **extra_fields)
           # Create Ethereum wallet for superuser
         try:
-            import uuid
-            import os
-            from blockchain.models import EthereumWallet
-            from blockchain.services.ethereum_service import EthereumService
-            from dotenv import load_dotenv, set_key
-            
             # Generate a secure random password for the wallet
             wallet_password = uuid.uuid4().hex
+            
+            # Lazy load EthereumWallet model to avoid circular import
+            EthereumWallet = apps.get_model('blockchain', 'EthereumWallet')
             
             # Create and save the wallet
             wallet = EthereumWallet.create_wallet(user, wallet_password)
@@ -78,13 +85,11 @@ class CustomUserManager(BaseUserManager):
                 set_key(env_path, "ADMIN_WALLET_ADDRESS", wallet.address)
             
             # Log wallet creation
-            import logging
             logger = logging.getLogger(__name__)
             logger.info(f"Created wallet for admin {user.email}: {wallet.address}")
             logger.info(f"IMPORTANT: Admin wallet password: {wallet_password} (Saved to .env file)")
         except Exception as e:
             # Log the error but don't prevent superuser creation
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to create Ethereum wallet for admin {user.email}: {str(e)}")
         
@@ -177,9 +182,13 @@ class Election(models.Model):
     end_date = models.DateTimeField()
     contract_address = models.CharField(max_length=42, blank=True, null=True)  # Ethereum contract address
     is_active = models.BooleanField(default=False)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_created_elections')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='elections')
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    
+    # Fields migrated from blockchain.Election
+    status = models.CharField(max_length=50, blank=True, null=True)
+    is_published = models.BooleanField(default=False)
+    is_deployed = models.BooleanField(default=False)
     
     # Merkle tree fields
     merkle_root = models.CharField(max_length=64, blank=True, null=True)
@@ -201,11 +210,13 @@ class Candidate(models.Model):
         return f"{self.name} - {self.election.title}"
 
 class Vote(models.Model):
-    voter = models.ForeignKey(User, on_delete=models.PROTECT, related_name='api_votes')
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    voter = models.ForeignKey(User, on_delete=models.PROTECT, related_name='votes')
     election = models.ForeignKey(Election, on_delete=models.CASCADE, related_name='votes')
     candidate = models.ForeignKey(Candidate, on_delete=models.CASCADE, related_name='votes')
     timestamp = models.DateTimeField(auto_now_add=True)
     transaction_hash = models.CharField(max_length=255, blank=True, null=True)
+    receipt_hash = models.CharField(max_length=255, blank=True, null=True)
     is_confirmed = models.BooleanField(default=False)
     confirmation_timestamp = models.DateTimeField(blank=True, null=True)
     merkle_proof = models.JSONField(blank=True, null=True)
@@ -247,3 +258,51 @@ class Vote(models.Model):
     
     def __str__(self):
         return f"{self.voter} voted in {self.election.title}"
+
+class SystemSettings(models.Model):
+    """
+    Singleton model for storing system-wide settings.
+    Uses the SingletonModel pattern to ensure only one instance exists.
+    """
+    id = models.IntegerField(primary_key=True, default=1)
+    
+    # General settings
+    site_name = models.CharField(max_length=100, default="DSP Voting System")
+    site_description = models.TextField(blank=True, default="A secure blockchain-based voting system")
+    contact_email = models.EmailField(default="admin@example.com")
+    maintenance_mode = models.BooleanField(default=False)
+    maintenance_message = models.TextField(blank=True, default="System is currently under maintenance. Please check back later.")
+    
+    # Election settings
+    min_candidates = models.IntegerField(default=2)
+    max_candidates = models.IntegerField(default=20)
+    require_verification = models.BooleanField(default=True)
+    allow_election_editing = models.BooleanField(default=True)
+    time_before_start_to_lock = models.IntegerField(default=24)  # Hours
+    
+    # Security settings
+    session_timeout = models.IntegerField(default=60)  # Minutes
+    max_login_attempts = models.IntegerField(default=5)
+    password_expiry_days = models.IntegerField(default=90)
+    otp_expiry_minutes = models.IntegerField(default=15)
+    enforce_strong_passwords = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "System Settings"
+        verbose_name_plural = "System Settings"
+    
+    def save(self, *args, **kwargs):
+        """Override save to ensure only one instance exists"""
+        self.id = 1
+        return super().save(*args, **kwargs)
+    
+    @classmethod
+    def load(cls):
+        """Get the singleton settings object or create if it doesn't exist"""
+        try:
+            return cls.objects.get(id=1)
+        except cls.DoesNotExist:
+            return cls.objects.create()
