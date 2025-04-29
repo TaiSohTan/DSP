@@ -12,8 +12,7 @@ from .views import (
     ResendRegistrationOTPView,
     RequestPasswordResetView, 
     ResetPasswordView,
-    AdminDashboardView,
-    nullification_requests
+    AdminDashboardView
 )
 from .views_election import (
     ElectionViewSet,
@@ -29,7 +28,7 @@ from .views_settings import SystemSettingsView, ResetSystemSettingsView
 router = DefaultRouter()
 router.register(r'elections', ElectionViewSet)
 router.register(r'candidates', CandidateViewSet)
-router.register(r'votes', VoteViewSet)
+router.register(r'votes', VoteViewSet, basename='vote')
 
 urlpatterns = [
     # User authentication & registration
@@ -51,7 +50,6 @@ urlpatterns = [
     
     # Admin endpoints
     path('admin/dashboard/', AdminDashboardView.as_view(), name='admin-dashboard'),
-    path('admin/nullification-requests/', nullification_requests, name='nullification-requests'),
     path('admin/settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('admin/settings/reset/', ResetSystemSettingsView.as_view(), name='reset-system-settings'),
     path('admin/status/', system_status, name='system_status'),

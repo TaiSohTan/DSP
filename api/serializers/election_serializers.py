@@ -240,7 +240,7 @@ class ElectionSerializer(serializers.ModelSerializer):
                             contract_address=contract_address,
                             candidate_id=candidate_id,
                             name=candidate.name,
-                            party=candidate.description  # Using description as party since our contract expects it
+                            description=candidate.description  # Using description directly now that contract field name matches
                         )
                         
                         # Update candidate with blockchain ID
@@ -294,7 +294,13 @@ class VoteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"election_id": "This election has already ended."})
         
         # Check if user has already voted in this election
-        if Vote.objects.filter(voter=user, election=election).exists():
+        # Exclude nullified votes to allow re-voting after nullification
+        if Vote.objects.filter(
+            voter=user, 
+            election=election, 
+            is_confirmed=True,
+            nullification_status__in=['none', 'pending', 'rejected']
+        ).exists():
             raise serializers.ValidationError({"election_id": "You have already voted in this election."})
         
         # Store election and candidate for create method

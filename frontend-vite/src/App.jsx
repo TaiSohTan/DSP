@@ -19,6 +19,16 @@ import AdminDashboardPage from './pages/AdminDashboardPage';
 import VoteDetailsPage from './pages/VoteDetailsPage';
 import VerifyVotePage from './pages/VerifyVotePage';
 
+// Import Static Pages
+import AboutPage from './pages/AboutPage';
+import HowItWorksPage from './pages/HowItWorksPage';
+import FAQPage from './pages/FAQPage';
+import ContactPage from './pages/ContactPage';
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
+import TermsOfServicePage from './pages/TermsOfServicePage';
+import DocumentationPage from './pages/DocumentationPage';
+import ApiDocsPage from './pages/ApiDocsPage';
+
 // Import Authentication Components
 import LoginForm from './components/auth/LoginForm';
 import RegisterForm from './components/auth/RegisterForm';
@@ -40,12 +50,11 @@ import UserForm from './components/admin/UserFormComponent';
 import BlockchainStatus from './components/admin/BlockchainStatusComponent'; 
 import SystemSettings from './components/admin/SystemSettingsComponent'; 
 import VotesManagement from './components/admin/VotesManagementComponent';
-import NullificationRequests from './components/admin/NullificationRequestsComponent';
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <BrowserRouter>
+      <AuthProvider>
         <Routes>
           {/* Public routes that redirect authenticated users */}
           <Route element={<RedirectAuthenticatedUser />}>
@@ -66,6 +75,18 @@ function App() {
           
           {/* Public verify vote route - anyone can access this route */}
           <Route path="/verify-vote/:id" element={<VerifyVotePage />} />
+          
+          {/* Public Static Pages */}
+          <Route element={<Layout />}>
+            <Route path="/about" element={<AboutPage />} />
+            <Route path="/how-it-works" element={<HowItWorksPage />} />
+            <Route path="/faq" element={<FAQPage />} />
+            <Route path="/contact" element={<ContactPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms" element={<TermsOfServicePage />} />
+            <Route path="/documentation" element={<DocumentationPage />} />
+            <Route path="/api-docs" element={<ApiDocsPage />} />
+          </Route>
           
           {/* Public Election routes - accessible to everyone */}
           <Route element={<Layout />}>
@@ -98,6 +119,7 @@ function App() {
               
               {/* Vote details route */}
               <Route path="vote/:id/details" element={<VoteDetailsPage />} />
+              <Route path="votes/:id/receipt" element={<VoteDetailsPage />} />
               <Route path="verify-vote" element={<VerifyVotePage />} />
             </Route>
           </Route>
@@ -121,12 +143,11 @@ function App() {
               <Route path="blockchain/status" element={<BlockchainStatus />} />
               <Route path="settings" element={<SystemSettings />} />
               <Route path="votes" element={<VotesManagement />} />
-              <Route path="nullification-requests" element={<NullificationRequests />} />
             </Route>
           </Route>
         </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
 

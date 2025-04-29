@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authAPI } from '../../services/api';
-import TextInput from '../common/forms/TextInput';
 import Button from '../common/buttons/Button';
 import Alert from '../common/feedback/Alert';
 import LoadingSpinner from '../common/feedback/LoadingSpinner';
+import OTPInput from '../common/forms/OTPInput';
 
 const OTPVerificationForm = () => {
-  const [otp, setOtp] = useState('');
+  // Use an array of 6 digits for the OTP input
+  const [otpDigits, setOtpDigits] = useState(Array(6).fill(''));
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -41,17 +42,13 @@ const OTPVerificationForm = () => {
     }
   }, [timer, canResend]);
   
-  const handleChange = (e) => {
-    // Only allow numbers
-    const value = e.target.value.replace(/[^0-9]/g, '');
-    
-    if (value.length <= 6) {
-      setOtp(value);
-    }
-  };
+  // Get the complete OTP from all digits
+  const getCompleteOtp = () => otpDigits.join('');
   
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    const otp = getCompleteOtp();
     
     if (otp.length !== 6) {
       setError('Please enter a valid 6-digit OTP code');
@@ -83,6 +80,9 @@ const OTPVerificationForm = () => {
     } catch (err) {
       console.error('OTP Verification Error:', err);
       setError(err.response?.data?.error || 'Invalid OTP code. Please try again.');
+      
+      // Clear the OTP fields on error for better UX
+      setOtpDigits(Array(6).fill(''));
     } finally {
       setIsLoading(false);
     }
@@ -107,6 +107,9 @@ const OTPVerificationForm = () => {
       setTimer(60);
       setCanResend(false);
       setSuccess('A new verification code has been sent');
+      
+      // Clear existing OTP entries
+      setOtpDigits(Array(6).fill(''));
     } catch (err) {
       console.error('Resend OTP Error:', err);
       setError(err.response?.data?.error || 'Failed to resend verification code');
@@ -140,12 +143,12 @@ const OTPVerificationForm = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md w-full space-y-8">
-        <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+        <div className="text-center">
+          <h2 className="mt-6 text-3xl font-extrabold text-gray-900">
             Verify Your Account
           </h2>
-          <p className="mt-2 text-center text-sm text-gray-600">
-            We've sent a verification code to {phone_number}
+          <p className="mt-2 text-sm text-gray-600">
+            We've sent a verification code to <span className="font-medium">{phone_number}</span>
           </p>
         </div>
         
@@ -153,21 +156,20 @@ const OTPVerificationForm = () => {
         {success && <Alert type="success" message={success} />}
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="rounded-md shadow-sm -space-y-px">
-            <TextInput
-              id="otp"
-              name="otp"
-              type="text"
-              value={otp}
-              onChange={handleChange}
-              placeholder="Enter 6-digit code"
-              required
-              autoFocus
-              inputMode="numeric"
-              pattern="[0-9]*"
-              maxLength={6}
-              className="text-center text-2xl letter-spacing-wide"
+          <div className="flex flex-col items-center">
+            <label htmlFor="otp-input-0" className="sr-only">
+              Enter your verification code
+            </label>
+            
+            <OTPInput 
+              otpDigits={otpDigits} 
+              setOtpDigits={setOtpDigits}
+              disabled={isLoading}
             />
+            
+            <p className="mt-4 text-sm text-gray-500">
+              Enter the 6-digit code sent to your device
+            </p>
           </div>
           
           <div className="flex items-center justify-between">
@@ -176,15 +178,16 @@ const OTPVerificationForm = () => {
                 <button
                   type="button"
                   onClick={handleResendOtp}
-                  className="font-medium text-primary-600 hover:text-primary-500"
+                  className="font-medium text-primary-600 hover:text-primary-500 transition-colors"
                   disabled={isLoading}
+                  aria-label="Resend verification code"
                 >
                   Resend Code
                 </button>
               ) : (
-                <span className="text-gray-500">
-                  Resend code in {timer}s
-                </span>
+                <div className="text-gray-500">
+                  Resend code in <span className="font-medium">{timer}s</span>
+                </div>
               )}
             </div>
             
@@ -192,7 +195,8 @@ const OTPVerificationForm = () => {
               <button
                 type="button"
                 onClick={() => navigate('/login')}
-                className="font-medium text-gray-600 hover:text-gray-500"
+                className="font-medium text-gray-600 hover:text-gray-500 transition-colors"
+                aria-label="Back to login"
               >
                 Back to Login
               </button>
@@ -204,7 +208,7 @@ const OTPVerificationForm = () => {
               type="submit"
               variant="primary"
               fullWidth
-              disabled={otp.length !== 6 || isLoading}
+              disabled={getCompleteOtp().length !== 6 || isLoading}
             >
               {isLoading ? <LoadingSpinner size="small" color="white" /> : 'Verify'}
             </Button>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import axios from 'axios';
+import api from '../services/api'; // Import the configured API client
 import LoadingSpinner from '../components/common/feedback/LoadingSpinner';
 import Alert from '../components/common/feedback/Alert';
 import Button from '../components/common/buttons/Button';
@@ -17,8 +17,8 @@ const VerifyVotePage = () => {
     const fetchVoteDetails = async () => {
       try {
         setLoading(true);
-        // Using the new public_receipt endpoint that doesn't require authentication
-        const response = await axios.get(`/api/votes/${id}/public_receipt/`);
+        // Use the configured API client instead of direct axios
+        const response = await api.get(`/api/votes/${id}/public_receipt/`);
         setVote(response.data);
         setError(null);
       } catch (err) {
@@ -47,8 +47,8 @@ const VerifyVotePage = () => {
     try {
       setVerifying(true);
       setError(null);
-      // Using the new public_verify endpoint that doesn't require authentication
-      const response = await axios.get(`/api/votes/${id}/public_verify/`);
+      // Use the configured API client instead of direct axios
+      const response = await api.get(`/api/votes/${id}/public_verify/`);
       setVerificationResult(response.data);
       setVerifying(false);
     } catch (error) {
@@ -63,7 +63,9 @@ const VerifyVotePage = () => {
   };
 
   const downloadReceiptPDF = () => {
-    window.open(`/api/votes/${id}/receipt_pdf/`, '_blank');
+    // Use the correct URL with the API_URL
+    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    window.open(`${baseUrl}/api/votes/${id}/receipt_pdf/`, '_blank');
   };
 
   if (loading) {
@@ -208,17 +210,6 @@ const VerifyVotePage = () => {
                   <Button variant="secondary" onClick={downloadReceiptPDF}>
                     Download PDF Receipt
                   </Button>
-
-                  {vote.blockchain_data?.transaction_hash && (
-                    <a 
-                      href={`https://etherscan.io/tx/${vote.blockchain_data.transaction_hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-                    >
-                      View on Etherscan
-                    </a>
-                  )}
                 </div>
               </div>
             ) : (

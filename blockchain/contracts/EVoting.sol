@@ -14,7 +14,7 @@ contract EVoting {
     struct Candidate {
         uint256 id;
         string name;
-        string party;
+        string description;
         uint256 voteCount;
         bool exists;
     }
@@ -22,7 +22,6 @@ contract EVoting {
     // Vote struct to track voter's choices
     struct Vote {
         uint256 candidateId;
-        bool isActive; // Indicates if the vote is active or nullified
         uint256 timestamp;
     }
     
@@ -30,15 +29,12 @@ contract EVoting {
     mapping(uint256 => Candidate) public candidates;
     mapping(address => Vote) public votes;
     mapping(address => bool) public eligibleVoters;
-    mapping(address => Vote[]) public nullifiedVotes; // Track nullified votes for audit
     uint256[] public candidateIds;
     
     // Events
     event CandidateAdded(uint256 indexed candidateId, string name);
     event VoterAdded(address indexed voter);
     event VoteCast(address indexed voter, uint256 indexed candidateId, uint256 timestamp);
-    event VoteNullified(address indexed voter, uint256 indexed candidateId, uint256 timestamp);
-    event NewVoteAfterNullification(address indexed voter, uint256 indexed candidateId, uint256 timestamp);
     
     // Modifiers
     modifier onlyAdmin() {
@@ -71,13 +67,13 @@ contract EVoting {
     }
     
     // Add a candidate to the election
-    function addCandidate(uint256 _candidateId, string memory _name, string memory _party) public onlyAdmin {
+    function addCandidate(uint256 _candidateId, string memory _name, string memory _description) public onlyAdmin {
         require(!candidates[_candidateId].exists, "Candidate with this ID already exists");
         
         candidates[_candidateId] = Candidate({
             id: _candidateId,
             name: _name,
-            party: _party,
+            description: _description,
             voteCount: 0,
             exists: true
         });
@@ -99,81 +95,26 @@ contract EVoting {
     // Cast a vote
     function castVote(uint256 _candidateId) public onlyEligible electionActive {
         require(candidates[_candidateId].exists, "Candidate does not exist");
+        require(votes[msg.sender].timestamp == 0, "You have already voted");
         
-        // If this voter already has a vote, handle differently based on if it's active
-        if (hasVoted(msg.sender)) {
-            require(!votes[msg.sender].isActive, "You already have an active vote");
-            
-            // This is a revote after nullification - store previous vote in audit trail
-            nullifiedVotes[msg.sender].push(votes[msg.sender]);
-            
-            // Decrease previous candidate's count
-            candidates[votes[msg.sender].candidateId].voteCount--;
-            
-            // Record new vote
-            votes[msg.sender] = Vote({
-                candidateId: _candidateId,
-                isActive: true,
-                timestamp: block.timestamp
-            });
-            
-            // Increment candidate vote count
-            candidates[_candidateId].voteCount++;
-            
-            // Emit event
-            emit NewVoteAfterNullification(msg.sender, _candidateId, block.timestamp);
-        } else {
-            // First time voting
-            votes[msg.sender] = Vote({
-                candidateId: _candidateId,
-                isActive: true,
-                timestamp: block.timestamp
-            });
-            
-            // Increment counts
-            candidates[_candidateId].voteCount++;
-            totalVotes++;
-            
-            // Emit event
-            emit VoteCast(msg.sender, _candidateId, block.timestamp);
-        }
-    }
-    
-    // Nullify a vote - can only be called by admin
-    function nullifyVote(address _voter) public onlyAdmin {
-        require(hasVoted(_voter), "No vote to nullify");
-        require(votes[_voter].isActive, "Vote is already nullified");
+        // Record vote
+        votes[msg.sender] = Vote({
+            candidateId: _candidateId,
+            timestamp: block.timestamp
+        });
         
-        // Get the candidate ID before nullifying
-        uint256 candidateId = votes[_voter].candidateId;
-        
-        // Mark vote as inactive
-        votes[_voter].isActive = false;
-        
-        // Decrease candidate vote count
-        candidates[candidateId].voteCount--;
-        
-        // Decrease total votes
-        totalVotes--;
+        // Increment counts
+        candidates[_candidateId].voteCount++;
+        totalVotes++;
         
         // Emit event
-        emit VoteNullified(_voter, candidateId, block.timestamp);
+        emit VoteCast(msg.sender, _candidateId, block.timestamp);
     }
     
     // Check if a voter has voted
     function hasVoted(address _voter) public view returns (bool) {
-        // Check if voter has a recorded vote (regardless of active status)
+        // Check if voter has a recorded vote
         return votes[_voter].timestamp > 0;
-    }
-    
-    // Get nullification history count for a voter
-    function getNullificationCount(address _voter) public view returns (uint256) {
-        return nullifiedVotes[_voter].length;
-    }
-    
-    // Check if a specific vote is active
-    function isVoteActive(address _voter) public view returns (bool) {
-        return votes[_voter].isActive && votes[_voter].timestamp > 0;
     }
     
     // Check if the election is active
@@ -186,7 +127,7 @@ contract EVoting {
         require(candidates[_candidateId].exists, "Candidate does not exist");
         
         Candidate memory candidate = candidates[_candidateId];
-        return (candidate.id, candidate.name, candidate.party, candidate.voteCount);
+        return (candidate.id, candidate.name, candidate.description, candidate.voteCount);
     }
     
     // Get all candidate IDs

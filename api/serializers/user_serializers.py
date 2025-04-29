@@ -131,3 +131,36 @@ class UserDetailSerializer(serializers.ModelSerializer):
             # Return only the last 4 characters
             return obj.ethereum_private_key[-4:] if len(obj.ethereum_private_key) >= 4 else ''
         return ''
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """
+    Serializer for password reset requests.
+    """
+    email = serializers.EmailField(required=True)
+
+class PasswordResetSerializer(serializers.Serializer):
+    """
+    Serializer for password reset with token verification.
+    """
+    email = serializers.EmailField(required=True)
+    token = serializers.CharField(required=True)
+    password = serializers.CharField(required=True, style={'input_type': 'password'})
+    
+    def validate_password(self, value):
+        """
+        Validate the password strength.
+        """
+        try:
+            # We'll use an empty user model for validation since we don't have the actual user yet
+            validate_password(value)
+        except ValidationError as e:
+            raise serializers.ValidationError(list(e.messages))
+        return value
+
+class CompleteRegistrationSerializer(serializers.Serializer):
+    """
+    Serializer for completing registration after OTP verification.
+    """
+    registration_id = serializers.CharField(required=True)
+    phone_number = serializers.CharField(required=True)
+    otp = serializers.CharField(required=True)

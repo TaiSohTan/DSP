@@ -1,29 +1,38 @@
-from django.shortcuts import render
-from rest_framework import status, generics, permissions
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth import authenticate
-from django.core.cache import cache
-from .models import Election
-import logging 
+# Standard library imports
+import logging
+from datetime import datetime, timedelta
+import random
 import uuid
 import json
 import os
+
+# Third-party imports
+from django.contrib.auth import authenticate, get_user_model
 from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.shortcuts import render, get_object_or_404
+from django.utils import timezone
+from rest_framework import generics, permissions, status, views
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
+
+# Local application imports
 from .models import User
 from .serializers.user_serializers import (
-    UserRegistrationSerializer,
     UserLoginSerializer,
+    UserRegistrationSerializer,
     UserDetailSerializer,
-    OTPVerificationSerializer
+    PasswordResetRequestSerializer,
+    PasswordResetSerializer,
+    CompleteRegistrationSerializer
 )
 from .services.otp_service import OTPService
-from django.utils import timezone
-from datetime import timedelta
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAdminUser
-from django.db.models import Count, Sum, Avg
+
+from django.core.cache import cache
+from .models import Election
 from .models import Vote
 
 # Configure logger
@@ -354,11 +363,11 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
-
-class SendPhoneOTPView(APIView):
-    """
+"""
     API view for sending OTP to user's phone for verification.
     """
+class SendPhoneOTPView(APIView):
+    
     permission_classes = [permissions.AllowAny]
     
     def post(self, request, *args, **kwargs):
@@ -549,7 +558,7 @@ class ResetPasswordView(APIView):
         
         if not token or not password or not email:
             return Response({
-                'error': 'Token, email, and new password are required.'
+                'error': 'Token, email, and new password are required.' 
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validate the token using OTPService

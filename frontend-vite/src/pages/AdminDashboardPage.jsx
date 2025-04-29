@@ -30,11 +30,6 @@ const AdminDashboardPage = () => {
       confirmed: 0,
       pending: 0
     },
-    nullifications: {
-      pending: 0,
-      approved: 0,
-      rejected: 0
-    },
     blockchain: {
       wallets: 0,
       transactions: 0
@@ -50,7 +45,6 @@ const AdminDashboardPage = () => {
     connected: false,
     message: 'Checking blockchain connection...'
   });
-  const [nullificationRequests, setNullificationRequests] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -110,28 +104,21 @@ const AdminDashboardPage = () => {
           console.warn('Could not fetch user statistics:', err);
         }
         
-        // Fetch nullification requests
-        try {
-          const nullificationResponse = await adminAPI.getNullificationRequests();
-          setNullificationRequests(nullificationResponse.data.length || 0);
-        } catch (err) {
-          console.warn('Could not fetch nullification requests:', err);
-        }
-        
         // Fetch election statistics
         try {
           const electionsResponse = await adminAPI.getElectionStats();
+          console.log('Election stats response:', electionsResponse.data); // Debug log
           setStats(prevStats => ({
             ...prevStats,
             elections: {
-              total: electionsResponse.data.total || 0,
-              active: electionsResponse.data.active || 0,
-              upcoming: electionsResponse.data.upcoming || 0,
-              past: electionsResponse.data.past || 0
+              total: electionsResponse.data.elections?.total || 0,
+              active: electionsResponse.data.elections?.active || 0,
+              upcoming: electionsResponse.data.elections?.upcoming || 0,
+              past: electionsResponse.data.elections?.past || 0
             },
             votes: {
               ...prevStats.votes,
-              total: electionsResponse.data.votes || 0
+              total: electionsResponse.data.votes?.total || 0
             }
           }));
         } catch (err) {
@@ -160,7 +147,9 @@ const AdminDashboardPage = () => {
     // Set up interval for periodic refresh (every 60 seconds)
     const interval = setInterval(fetchAdminData, 60000);
     
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+    };
   }, []);
 
   const handleSyncBlockchain = async () => {
@@ -282,28 +271,6 @@ const AdminDashboardPage = () => {
             </Button>
           </Link>
           
-          <Link to="/admin/nullification-requests">
-            <Button variant="secondary">
-              Nullification Requests
-              {nullificationRequests > 0 && (
-                <span style={{ 
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center', 
-                  marginLeft: theme.spacing[2],
-                  backgroundColor: theme.colors.error[500],
-                  color: theme.colors.white,
-                  borderRadius: theme.borderRadius.full,
-                  width: theme.spacing[5],
-                  height: theme.spacing[5],
-                  fontSize: theme.typography.fontSize.xs
-                }}>
-                  {nullificationRequests}
-                </span>
-              )}
-            </Button>
-          </Link>
-          
           <Link to="/admin/elections">
             <Button variant="secondary">
               Manage Elections
@@ -403,7 +370,7 @@ const AdminDashboardPage = () => {
               </span>
             </div>
             
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: theme.spacing[2] }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ color: theme.colors.neutral[500] }}>Pending Verifications</span>
               <span style={{ 
                 fontSize: theme.typography.fontSize.lg, 
@@ -411,17 +378,6 @@ const AdminDashboardPage = () => {
                 color: stats.users.unverified > 0 ? theme.colors.warning[600] : theme.colors.neutral[800]
               }}>
                 {stats.users.unverified}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ color: theme.colors.neutral[500] }}>Nullification Requests</span>
-              <span style={{ 
-                fontSize: theme.typography.fontSize.lg, 
-                fontWeight: theme.typography.fontWeight.bold,
-                color: nullificationRequests > 0 ? theme.colors.error[600] : theme.colors.neutral[800]
-              }}>
-                {nullificationRequests}
               </span>
             </div>
           </div>

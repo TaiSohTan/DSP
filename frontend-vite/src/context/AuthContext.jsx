@@ -48,18 +48,34 @@ export const AuthProvider = ({ children }) => {
             const response = await authAPI.refreshToken(refreshToken);
             localStorage.setItem('access_token', response.data.access);
             
-            // Set user from refreshed token
-            const refreshedToken = jwtDecode(response.data.access);
-            
-            const userData = {
-              id: refreshedToken.user_id,
-              email: refreshedToken.email,
-              name: refreshedToken.name || '',
-              is_staff: refreshedToken.is_staff || false,
-              is_admin: refreshedToken.is_staff || refreshedToken.is_superuser || false,
-            };
-            
-            setCurrentUser(userData);
+            // After refreshing token, fetch the complete user profile
+            try {
+              const userResponse = await authAPI.getProfile();
+              
+              // Set user data from the API response
+              const userData = {
+                id: userResponse.data.id,
+                email: userResponse.data.email,
+                name: userResponse.data.full_name || '',
+                is_staff: userResponse.data.is_admin || false,
+                is_admin: userResponse.data.is_admin || false,
+              };
+              
+              setCurrentUser(userData);
+            } catch (profileError) {
+              // If profile fetch fails, fall back to token data
+              const refreshedToken = jwtDecode(response.data.access);
+              
+              const userData = {
+                id: refreshedToken.user_id,
+                email: refreshedToken.email,
+                name: refreshedToken.name || '',
+                is_staff: refreshedToken.is_staff || false,
+                is_admin: refreshedToken.is_staff || refreshedToken.is_superuser || false,
+              };
+              
+              setCurrentUser(userData);
+            }
             
             // No automatic redirect - stay on current page
           } catch (refreshError) {
@@ -68,18 +84,32 @@ export const AuthProvider = ({ children }) => {
             redirectIfProtectedRoute();
           }
         } else {
-          // Token valid, set user
-          const userData = {
-            id: decodedToken.user_id,
-            email: decodedToken.email,
-            name: decodedToken.name || '',
-            is_staff: decodedToken.is_staff || false,
-            is_admin: decodedToken.is_staff || decodedToken.is_superuser || false,
-          };
-          
-          setCurrentUser(userData);
-          
-          // No automatic redirect - stay on current page
+          // Token valid, fetch user profile from API for complete data
+          try {
+            const userResponse = await authAPI.getProfile();
+            
+            // Set user data from the API response
+            const userData = {
+              id: userResponse.data.id,
+              email: userResponse.data.email,
+              name: userResponse.data.full_name || '',
+              is_staff: userResponse.data.is_admin || false,
+              is_admin: userResponse.data.is_admin || false,
+            };
+            
+            setCurrentUser(userData);
+          } catch (profileError) {
+            // If API fetch fails, fall back to token data
+            const userData = {
+              id: decodedToken.user_id,
+              email: decodedToken.email,
+              name: decodedToken.name || '',
+              is_staff: decodedToken.is_staff || false,
+              is_admin: decodedToken.is_staff || decodedToken.is_superuser || false,
+            };
+            
+            setCurrentUser(userData);
+          }
         }
       } catch (error) {
         // Invalid token
@@ -121,17 +151,34 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('access_token', response.data.access);
       localStorage.setItem('refresh_token', response.data.refresh);
       
-      // Set user from token
-      const decodedToken = jwtDecode(response.data.access);
-      const userData = {
-        id: decodedToken.user_id,
-        email: decodedToken.email,
-        name: decodedToken.name || '',
-        is_staff: decodedToken.is_staff || false,
-        is_admin: decodedToken.is_staff || decodedToken.is_superuser || false,
-      };
+      console.log("Login response:", response.data); // Debug login response
       
-      setCurrentUser(userData);
+      // Try to get user data directly from the response if available
+      if (response.data.user) {
+        const userData = {
+          id: response.data.user.id,
+          email: response.data.user.email,
+          name: response.data.user.full_name || '',
+          is_staff: response.data.user.is_admin || false,
+          is_admin: response.data.user.is_admin || false, // Directly use from response
+        };
+        
+        console.log("Using user data from response:", userData);
+        setCurrentUser(userData);
+      } else {
+        // Fall back to token data if user object is not provided
+        const decodedToken = jwtDecode(response.data.access);
+        const userData = {
+          id: decodedToken.user_id,
+          email: decodedToken.email,
+          name: decodedToken.name || '',
+          is_staff: decodedToken.is_staff || false,
+          is_admin: decodedToken.is_staff || decodedToken.is_superuser || false,
+        };
+        
+        console.log("Using decoded token data:", userData);
+        setCurrentUser(userData);
+      }
       
       // Clear any previous errors on successful login
       setError(null);
@@ -153,12 +200,30 @@ export const AuthProvider = ({ children }) => {
   
   // After login navigation
   const navigateAfterLogin = () => {
-    // Redirect admin users to admin dashboard
-    if (currentUser?.is_admin) {
-      navigate('/admin');
+    console.log('Navigating after login. Current user:', currentUser);
+    
+    // Ensure we have the current user loaded and check admin status
+    if (currentUser) {
+      // Debug the admin status fields
+      console.log('Admin status check:', {
+        is_admin: currentUser.is_admin,
+        is_staff: currentUser.is_staff,
+        is_superuser: currentUser?.is_superuser
+      });
+      
+      // Redirect admin users to admin dashboard
+      if (currentUser.is_admin === true || currentUser.is_staff === true) {
+        console.log('User is admin, redirecting to /admin');
+        navigate('/admin', { replace: true });
+      } else {
+        // Redirect regular users to user dashboard
+        console.log('User is not admin, redirecting to /dashboard');
+        navigate('/dashboard', { replace: true });
+      }
     } else {
-      // Redirect regular users to user dashboard
-      navigate('/dashboard');
+      console.error('No user data available for navigation decision');
+      // Default to dashboard if user data is not available
+      navigate('/dashboard', { replace: true });
     }
   };
   
@@ -196,7 +261,8 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
     setCurrentUser(null);
-    navigate('/');
+    // Force an immediate redirect to homepage
+    navigate('/', { replace: true });
   };
   
   // Context value

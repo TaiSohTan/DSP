@@ -1,10 +1,29 @@
+# Standard library imports
+import logging
+import os
+import sys
+import json
+import time
+from datetime import datetime, timedelta
+
+# Third-party imports
+from django.contrib.auth import get_user_model
+from django.core.paginator import Paginator, EmptyPage
+from django.db.models import Count, Sum, F, Q
+from django.http import JsonResponse, HttpResponse
+from django.utils import timezone
+
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework import status
-from django.contrib.auth import get_user_model
-from django.db.models import Count, Q
-from django.utils import timezone
+
+# Local application imports
+from .models import User, Election, Candidate, Vote, SystemSettings
+from verification.models import VerificationUser
+
+from blockchain.models import EthereumWallet
+from blockchain.services.ethereum_service import EthereumService
 
 User = get_user_model()
 
@@ -72,7 +91,6 @@ def admin_users(request):
             'users': user_data  # Adding users key for frontend compatibility
         })
     except Exception as e:
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Error in admin_users endpoint: {str(e)}")
         # Return empty results with error message
@@ -146,7 +164,6 @@ def admin_user_detail(request, user_id):
             return Response({"message": "User deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
             
     except Exception as e:
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Error in admin_user_detail endpoint: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -168,7 +185,6 @@ def admin_verify_user(request, user_id):
         
         return Response({"message": "User verified successfully"})
     except Exception as e:
-        import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Error in admin_verify_user endpoint: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

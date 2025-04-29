@@ -17,7 +17,7 @@ import PropTypes from 'prop-types';
 const Alert = ({ 
   type = 'info', 
   title, 
-    message, 
+  message, 
   dismissible = false, 
   onDismiss, 
   className = '' 

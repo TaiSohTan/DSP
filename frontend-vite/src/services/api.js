@@ -68,7 +68,7 @@ api.interceptors.response.use(
 
 // Authentication API - Matches actual endpoints in api/urls.py
 export const authAPI = {
-  login: (email, password) => api.post('/api/login/', { email, password }),
+  login: (email, password, rememberMe = false) => api.post('/api/login/', { email, password, remember_me: rememberMe }),
   register: (userData) => api.post('/api/register/', userData),
   completeRegistration: (userData) => api.post('/api/register/confirm/', userData),
   resendRegistrationOTP: (registrationId) => api.post('/api/resend-registration-otp/', { registration_id: registrationId }),
@@ -131,7 +131,6 @@ export const voteAPI = {
   getVoteDetails: (voteId) => api.get(`/api/votes/${voteId}/`),
   // Updated to match the correct endpoint path with query parameters
   checkUserVote: (electionId) => api.get(`/api/votes/election/?election_id=${electionId}`),
-  requestNullification: (voteId, data) => api.post(`/api/votes/${voteId}/request_nullification/`, data),
   sendEmailOtp: () => api.post('/api/send-email-otp/'), // Added method for resending OTP during voting
   // New method for downloading PDF receipt
   downloadReceiptPDF: (voteId) => api.get(`/api/votes/${voteId}/receipt_pdf/`, {
@@ -181,11 +180,6 @@ export const adminAPI = {
   updateUser: (userId, userData) => api.put(`/api/admin/users/${userId}/`, userData),
   deleteUser: (userId) => api.delete(`/api/admin/users/${userId}/`),
   verifyUser: (userId) => api.post(`/api/admin/users/${userId}/verify/`),
-  getNullificationRequests: (electionId) => api.get('/api/admin/nullification-requests/', {
-    params: electionId ? { election_id: electionId } : {}
-  }),
-  approveNullification: (voteId, reason) => api.post(`/api/votes/${voteId}/approve_nullification/`, { reason }),
-  rejectNullification: (voteId, reason) => api.post(`/api/votes/${voteId}/reject_nullification/`, { reason }),
   // System Settings methods
   getSystemSettings: () => api.get('/api/admin/settings/'),
   updateSystemSettings: (settings, password) => api.put('/api/admin/settings/', { 

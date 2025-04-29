@@ -4,8 +4,11 @@ import { useAuth } from '../../context/AuthContext';
 import LoadingSpinner from '../common/feedback/LoadingSpinner';
 
 const ProtectedRoute = ({ requireAdmin = false, userOnly = false }) => {
-  const { isAuthenticated, isAdmin, currentUser, isLoading } = useAuth();
+  const { isAuthenticated, currentUser, isLoading } = useAuth();
   const location = useLocation();
+  
+  // Properly determine admin status from the currentUser
+  const isAdmin = currentUser?.is_admin === true || currentUser?.is_staff === true;
 
   // Add debugging in development mode
   React.useEffect(() => {
@@ -15,7 +18,7 @@ const ProtectedRoute = ({ requireAdmin = false, userOnly = false }) => {
         requireAdmin, 
         userOnly, 
         isAuthenticated,
-        isAdmin,
+        isAdmin, // Now this will have the correct value
         currentUser
       });
     }

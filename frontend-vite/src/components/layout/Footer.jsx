@@ -9,13 +9,13 @@ const Footer = () => {
       <div className="container mx-auto px-4">
         <div className="flex flex-col md:flex-row justify-between">
           <div className="mb-6 md:mb-0">
-            <h3 className="text-xl font-bold mb-2">Secure Voting System</h3>
+            <h3 className="text-xl font-bold mb-2">ChainVote</h3>
             <p className="text-gray-400">
-              Blockchain-powered elections with transparency and security.
+              Blockchain-powered E-Voting System.
             </p>
           </div>
           
-          <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
             <div>
               <h4 className="text-sm font-semibold uppercase tracking-wider mb-3">Platform</h4>
               <ul className="space-y-2">
@@ -48,6 +48,27 @@ const Footer = () => {
                 <li>
                   <Link to="/contact" className="text-gray-400 hover:text-white transition">
                     Contact
+                  </Link>
+                </li>
+              </ul>
+            </div>
+            
+            <div>
+              <h4 className="text-sm font-semibold uppercase tracking-wider mb-3">Documentation & API</h4>
+              <ul className="space-y-2">
+                <li>
+                  <Link to="/documentation" className="text-gray-400 hover:text-white transition">
+                    User Guide
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/documentation" state={{ tab: 'developerDocs' }} className="text-gray-400 hover:text-white transition">
+                    Developer Docs
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/api-docs" className="text-gray-400 hover:text-white transition">
+                    API Reference
                   </Link>
                 </li>
               </ul>

@@ -36,10 +36,7 @@ class OTPService:
     
     # Flag to control service usage vs. logging (for development)
     USE_SMS_SERVICE = getattr(settings, 'USE_SMS_SERVICE', False)
-    
-    @classmethod
-    def generate_otp(cls, length: int = 6) -> str:
-        """
+    """
         Generate a random OTP of specified length.
         
         Args:
@@ -48,6 +45,9 @@ class OTPService:
         Returns:
             A random OTP string
         """
+    @classmethod
+    def generate_otp(cls, length: int = 6) -> str:
+        
         totp = pyotp.TOTP(pyotp.random_base32())
         otp = totp.now()
         
@@ -79,10 +79,7 @@ class OTPService:
     
     # Email configuration - set these in settings.py or environment variables
     USE_EMAIL_SERVICE = getattr(settings, 'USE_EMAIL_SERVICE', True)
-    
-    @classmethod
-    def send_email_otp(cls, email: str, purpose: str = "verification") -> bool:
-        """
+    """
         Generate and send OTP via email.
         Also logs the OTP for development purposes.
         
@@ -93,6 +90,9 @@ class OTPService:
         Returns:
             True if the email was sent successfully or logged, False otherwise
         """
+    @classmethod
+    def send_email_otp(cls, email: str, purpose: str = "verification") -> bool:
+        
         otp = cls.generate_otp()  # Generate OTP without unsupported arguments
         cache_key = cls._get_cache_key(email, is_email=True)
         
@@ -198,10 +198,7 @@ class OTPService:
             logger.info("Twilio service not configured, using log-based OTP only")
             # Return True since we're using the logged OTP for verification
             return True
-    
-    @classmethod
-    def generate_password_reset_token(cls, email: str) -> str:
-        """
+    """
         Generate a password reset token and store it in cache.
         
         Args:
@@ -209,7 +206,11 @@ class OTPService:
             
         Returns:
             Generated password reset token
-        """
+    """
+    
+    @classmethod
+    def generate_password_reset_token(cls, email: str) -> str:
+       
         # Generate a UUID token
         token = str(uuid.uuid4())
         
