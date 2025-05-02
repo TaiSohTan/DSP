@@ -200,16 +200,19 @@ const AdminDashboardPage = () => {
 
   if (isLoading) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        flexDirection: 'column', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '64vh',
-        marginLeft: '240px' // Offset for sidebar
-      }}>
-        <LoadingSpinner size="medium" />
-        <p style={{ marginTop: '1rem', color: theme.colors.neutral[600] }}>Loading admin dashboard...</p>
+      <div style={{ display: 'flex' }}>
+        <AdminSidebar onActionClick={handleSidebarAction} />
+        <div style={{ 
+          flexGrow: 1,
+          display: 'flex', 
+          flexDirection: 'column', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100vh'
+        }}>
+          <LoadingSpinner size="medium" />
+          <p style={{ marginTop: '1rem', color: theme.colors.neutral[600] }}>Loading admin dashboard...</p>
+        </div>
       </div>
     );
   }
@@ -230,10 +233,8 @@ const AdminDashboardPage = () => {
       
       {/* Main Content */}
       <div style={{ 
-        flexGrow: 1, 
-        marginLeft: '240px', // Match sidebar width exactly
+        flexGrow: 1,
         padding: theme.layout.container.padding.DEFAULT,
-        width: 'calc(100% - 240px)',
         boxSizing: 'border-box'
       }}>
         {/* Admin Dashboard Header */}
