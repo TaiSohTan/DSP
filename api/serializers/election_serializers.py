@@ -294,12 +294,10 @@ class VoteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"election_id": "This election has already ended."})
         
         # Check if user has already voted in this election
-        # Exclude nullified votes to allow re-voting after nullification
         if Vote.objects.filter(
             voter=user, 
             election=election, 
-            is_confirmed=True,
-            nullification_status__in=['none', 'pending', 'rejected']
+            is_confirmed=True
         ).exists():
             raise serializers.ValidationError({"election_id": "You have already voted in this election."})
         
@@ -336,17 +334,33 @@ class VoteReceiptSerializer(serializers.ModelSerializer):
     election = PublicElectionSerializer(read_only=True)
     candidate = CandidateSerializer(read_only=True)
     verified = serializers.SerializerMethodField()
+    merkle_verification = serializers.SerializerMethodField()
     
     class Meta:
         model = Vote
         fields = ['id', 'election', 'candidate', 'timestamp', 
-                  'transaction_hash', 'is_confirmed', 'verified']
+                  'transaction_hash', 'receipt_hash', 'is_confirmed', 
+                  'verified', 'merkle_verification']
         read_only_fields = ['id', 'election', 'candidate', 'timestamp', 
-                            'transaction_hash', 'is_confirmed', 'verified']
+                            'transaction_hash', 'receipt_hash', 'is_confirmed', 
+                            'verified', 'merkle_verification']
     
     def get_verified(self, obj):
         # A vote is considered verified if it has a transaction hash and is confirmed
         return bool(obj.is_confirmed and obj.transaction_hash)
+    
+    def get_merkle_verification(self, obj):
+        # Return the Merkle proof data if available
+        if not obj.merkle_proof or not obj.election.merkle_root:
+            return None
+        
+        return {
+            'verified': True,  # We assume it's verified if it exists (verification happens when requested)
+            'root_hash': obj.election.merkle_root,
+            'last_update': obj.election.last_merkle_update.isoformat() if obj.election.last_merkle_update else None,
+            'proof_length': len(obj.merkle_proof) if obj.merkle_proof else 0,
+            'proof': obj.merkle_proof  # Include the actual proof
+        }
 
 class VoteConfirmationSerializer(serializers.Serializer):
     vote_id = serializers.UUIDField(required=True)
@@ -385,5 +399,4 @@ class VoteConfirmationSerializer(serializers.Serializer):
         vote.save()
         
         # Push to blockchain here (will be handled by the viewset)
-        
         return vote

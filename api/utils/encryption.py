@@ -13,7 +13,7 @@ class AES256Encryption:
     
     @staticmethod
     def get_encryption_key():
-        """Get or generate the encryption key (32 bytes for AES-256)"""
+        ## Get or generate the encryption key (32 bytes for AES-256)
         key = getattr(settings, 'DATABASE_ENCRYPTION_KEY', None)
         
         if not key:

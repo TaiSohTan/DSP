@@ -10,9 +10,6 @@ from django.utils import timezone
 from django.apps import apps
 
 from dotenv import load_dotenv, set_key
-
-# Remove direct import to avoid circular imports
-# from blockchain.models import EthereumWallet
 from blockchain.services.ethereum_service import EthereumService
 from .fields import AESEncryptedTextField, AESEncryptedCharField
 
@@ -228,10 +225,6 @@ class Vote(models.Model):
         return f"{self.voter} voted in {self.election.title}"
 
 class SystemSettings(models.Model):
-    """
-    Singleton model for storing system-wide settings.
-    Uses the SingletonModel pattern to ensure only one instance exists.
-    """
     id = models.IntegerField(primary_key=True, default=1)
     
     # General settings

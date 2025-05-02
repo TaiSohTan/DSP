@@ -136,7 +136,7 @@ export const AuthProvider = ({ children }) => {
   }, [location.pathname, navigate]);
   
   // Login function
-  const handleLogin = async (email, password) => {
+  const handleLogin = async (email, password, rememberMe = false, shouldNavigate = true) => {
     // Only clear errors if we're not preventing error reset
     if (!preventErrorReset) {
       setError(null);
@@ -145,7 +145,7 @@ export const AuthProvider = ({ children }) => {
     setIsLoading(true);
     
     try {
-      const response = await authAPI.login(email, password);
+      const response = await authAPI.login(email, password, rememberMe);
       
       // Store tokens
       localStorage.setItem('access_token', response.data.access);
@@ -184,15 +184,22 @@ export const AuthProvider = ({ children }) => {
       setError(null);
       setPreventErrorReset(false);
       
-      return true;
+      // Only navigate if the flag is true (default)
+      if (shouldNavigate) {
+        navigateAfterLogin();
+      }
+      
+      return response.data.user || true;
     } catch (error) {
-      const errorMessage = error.response?.data?.detail || 'Login failed. Please check your credentials.';
+      const errorMessage = error.response?.data?.detail || 
+                           error.response?.data?.error || 
+                           'Login failed. Please check your credentials.';
       setError(errorMessage);
       
       // Set the flag to prevent clearing errors on next attempt
       setPreventErrorReset(true);
       
-      return false;
+      throw error; // Rethrow to allow component-level handling
     } finally {
       setIsLoading(false);
     }

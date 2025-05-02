@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { authAPI } from '../../services/api';
@@ -15,8 +15,15 @@ const LoginForm = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loginSuccess, setLoginSuccess] = useState(false);
-  const { login } = useAuth();
+  const { login, error: contextError, clearError } = useAuth();
   const navigate = useNavigate();
+
+  // Use effect to sync errors from context to local state
+  useEffect(() => {
+    if (contextError) {
+      setLoginError(contextError);
+    }
+  }, [contextError]);
 
   // Enhanced animation variants
   const cardVariants = {
@@ -52,46 +59,73 @@ const LoginForm = () => {
     setIsSubmitting(true);
     
     try {
-      // Use the login function from auth context to ensure tokens are stored properly
-      await login(email, password);
+      // First attempt to log in without any redirects
+      const loginResult = await authAPI.login(email, password, rememberMe);
       
-      // Make a direct API call to get the user data for immediate check
-      const response = await authAPI.login(email, password);
+      // Store tokens directly
+      localStorage.setItem('access_token', loginResult.data.access);
+      localStorage.setItem('refresh_token', loginResult.data.refresh);
       
-      if (response && response.data) {
-        setLoginError(null);
-        console.log("Login successful, response data:", response.data);
-        
-        // Get admin status directly from API response
-        const adminStatus = response.data?.user?.is_admin === true;
-        console.log("Is admin user:", adminStatus);
-        
-        // Set state variables that will control rendering
-        setIsAdmin(adminStatus);
-        setLoginSuccess(true);
-        
-        // Regular users go to dashboard
-        if (!adminStatus) {
-          console.log("Redirecting to user dashboard");
+      // Extract user data from response
+      const userData = loginResult.data.user || {};
+      
+      // Check if user is admin
+      const isAdminUser = userData.is_admin === true;
+      
+      // Set local state - important to do before potential redirects
+      setLoginError(null); // Clear any error on success
+      setIsAdmin(isAdminUser);
+      setLoginSuccess(true);
+      
+      // Let the context know user is logged in (without redirect)
+      // We'll disable context login for now as it might be causing the refresh
+      // login(email, password, rememberMe, false);
+      
+      // Regular users go to dashboard
+      if (!isAdminUser) {
+        console.log("Redirecting to user dashboard");
+        // Use a longer delay to ensure state updates before navigating
+        setTimeout(() => {
           navigate('/dashboard', { replace: true });
-        }
-        // Admin users will be redirected by the AdminRedirect component
-        // This avoids timing issues with auth context updates
-      } else {
-        setLoginError('Login failed. Please check your credentials.');
+        }, 500);
       }
+      // Admin users will be redirected by the AdminRedirect component
+      
     } catch (error) {
       console.error('Login error:', error);
-      // Set the error message locally with more details
+      
+      // Get the detailed error message
       let errorMessage = 'Login failed. Please check your credentials.';
       
       if (error.response) {
-        errorMessage = error.response.data.error || error.response.data.detail || 'Login failed. Please check your credentials.';
+        // Get specific error message from response if available
+        errorMessage = error.response.data?.error || 
+                       error.response.data?.detail || 
+                       'Invalid email or password. Please try again.';
       } else if (error.request) {
         errorMessage = 'No response received from server. Please try again later.';
+      } else if (error.message) {
+        errorMessage = error.message;
       }
       
+      // Very important - set error state here, before any async operations
       setLoginError(errorMessage);
+      
+      // Add this to prevent any potential state resets after error
+      setTimeout(() => {
+        if (!loginError) {
+          setLoginError(errorMessage);
+        }
+      }, 100);
+      
+      // For debugging
+      console.log('Setting error message to:', errorMessage);
+      
+      // Prevent the effect from clearing the error
+      if (clearError) {
+        clearError();
+      }
+      
     } finally {
       setIsSubmitting(false);
     }
@@ -103,11 +137,13 @@ const LoginForm = () => {
     if (loginError) {
       // Only clear error when user modifies input fields after an error
       setLoginError(null);
+      clearError(); // Also clear context error
     }
   };
 
   const dismissError = () => {
     setLoginError(null);
+    clearError(); // Also clear context error
   };
 
   // If login was successful and user is admin, render the admin redirect component

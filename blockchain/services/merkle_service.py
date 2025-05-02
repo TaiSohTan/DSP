@@ -71,6 +71,8 @@ class MerkleService:
             vote = Vote.objects.get(id=vote_id, is_confirmed=True)
             election_id = vote.election_id
             
+            logger.info(f"Updating Merkle tree for vote {vote_id} in election {election_id}")
+            
             # Get or create the tree
             tree = MerkleService.get_or_create_tree(election_id)
             
@@ -78,9 +80,25 @@ class MerkleService:
             leaf_data = f"{vote.voter.id}:{election_id}:{vote.candidate.id}:{vote.transaction_hash}"
             result = tree.add_leaf(leaf_data)
             
+            if not result or 'merkle_proof' not in result:
+                logger.error(f"Failed to generate Merkle proof for vote {vote_id}: Invalid result from add_leaf")
+                return {
+                    'success': False,
+                    'error': "Failed to generate Merkle proof: Invalid result from tree.add_leaf"
+                }
+            
             # Update vote with merkle proof
             vote.merkle_proof = result['merkle_proof']
             vote.save(update_fields=['merkle_proof'])
+            
+            # Verify the proof was saved correctly
+            vote.refresh_from_db()
+            if not vote.merkle_proof:
+                logger.error(f"Failed to save Merkle proof for vote {vote_id}")
+                return {
+                    'success': False,
+                    'error': "Failed to save Merkle proof to vote"
+                }
             
             # Update election with new root
             election = vote.election
@@ -88,9 +106,21 @@ class MerkleService:
             election.last_merkle_update = timezone.now()
             election.save(update_fields=['merkle_root', 'last_merkle_update'])
             
+            # Verify the root was saved correctly
+            election.refresh_from_db()
+            if not election.merkle_root or election.merkle_root != result['merkle_root']:
+                logger.error(f"Failed to save Merkle root for election {election_id}")
+                return {
+                    'success': False,
+                    'error': "Failed to save Merkle root to election"
+                }
+            
             # Update cache
             cache_key = MerkleService.get_tree_cache_key(election_id)
             cache.set(cache_key, pickle.dumps(tree), MerkleService.CACHE_TIMEOUT)
+            
+            logger.info(f"Successfully updated Merkle tree for vote {vote_id}. Root: {result['merkle_root'][:16]}...")
+            logger.info(f"Proof length: {len(result['merkle_proof'])}")
             
             return {
                 'success': True,
@@ -106,7 +136,7 @@ class MerkleService:
                 'error': f"Vote {vote_id} not found"
             }
         except Exception as e:
-            logger.error(f"Error updating Merkle tree for vote {vote_id}: {str(e)}")
+            logger.error(f"Error updating Merkle tree for vote {vote_id}: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e)
@@ -116,36 +146,12 @@ class MerkleService:
     def verify_vote(vote_id):
         """
         Verify a vote using its stored Merkle proof.
-        If the vote has been nullified, verifies using the nullification Merkle proof.
         Returns verification result with details.
         """
         try:
             # Get the vote
             vote = Vote.objects.get(id=vote_id, is_confirmed=True)
             
-            # Special handling for nullified votes
-            if vote.nullification_status == 'nullified' and vote.nullification_merkle_proof:
-                # Reconstruct the nullified leaf data
-                nullified_leaf = f"NULLIFIED:{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
-                
-                # Verify the nullification proof
-                is_verified = MerkleTree.verify_proof(
-                    leaf_value=nullified_leaf,
-                    proof=vote.nullification_merkle_proof,
-                    root_hash=vote.election.merkle_root
-                )
-                
-                return {
-                    'verified': is_verified,
-                    'vote_id': vote.id,
-                    'election_id': vote.election.id,
-                    'merkle_root': vote.election.merkle_root,
-                    'verification_time': timezone.now().isoformat(),
-                    'is_nullified': True,
-                    'message': 'Nullified vote successfully verified in Merkle tree' if is_verified else 'Nullified vote verification failed'
-                }
-            
-            # Standard verification for non-nullified votes
             # Check if vote has a Merkle proof
             if not vote.merkle_proof:
                 return {
@@ -196,7 +202,6 @@ class MerkleService:
         """
         Check for possible tampering in an election by rebuilding the Merkle tree 
         from scratch and comparing with the stored root.
-        This method accounts for both regular and nullified votes.
         """
         try:
             election = Election.objects.get(id=election_id)
@@ -217,24 +222,12 @@ class MerkleService:
             # Build a fresh tree
             verification_tree = MerkleTree()
             
-            # Track counts for reporting
-            regular_votes = 0
-            nullified_votes = 0
-            
-            # First add regular votes
+            # Add all votes to the tree
+            vote_count = 0
             for vote in votes:
-                if vote.nullification_status != 'nullified':
-                    leaf_data = f"{vote.voter.id}:{election_id}:{vote.candidate.id}:{vote.transaction_hash}"
-                    verification_tree.add_leaf(leaf_data)
-                    regular_votes += 1
-            
-            # Then add nullified votes to match the order they were added
-            for vote in votes:
-                if vote.nullification_status == 'nullified':
-                    # Use the same format as in handle_nullified_vote
-                    nullified_leaf = f"NULLIFIED:{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
-                    verification_tree.add_leaf(nullified_leaf)
-                    nullified_votes += 1
+                leaf_data = f"{vote.voter.id}:{election_id}:{vote.candidate.id}:{vote.transaction_hash}"
+                verification_tree.add_leaf(leaf_data)
+                vote_count += 1
             
             # Get the fresh root
             fresh_root = verification_tree.get_root()
@@ -248,8 +241,7 @@ class MerkleService:
                 'stored_root': election.merkle_root,
                 'calculated_root': fresh_root,
                 'votes_checked': votes.count(),
-                'regular_votes': regular_votes,
-                'nullified_votes': nullified_votes,
+                'vote_count': vote_count,
                 'check_time': timezone.now().isoformat()
             }
             
@@ -272,67 +264,5 @@ class MerkleService:
             logger.error(f"Error checking for tampering in election {election_id}: {str(e)}")
             return {
                 'checked': False,
-                'error': str(e)
-            }
-    
-    @staticmethod
-    def handle_nullified_vote(vote_id):
-        """
-        Update the Merkle tree when a vote is nullified.
-        This creates a special leaf that marks the vote as nullified.
-        
-        Args:
-            vote_id: ID of the vote that was nullified
-            
-        Returns:
-            Dictionary with success status and merkle root
-        """
-        try:
-            from api.models import Vote
-            vote = Vote.objects.get(id=vote_id)
-            
-            # Get the election's Merkle tree
-            tree = MerkleService.get_or_create_tree(vote.election_id)
-            
-            # Create a nullification marker leaf
-            # Format: "NULLIFIED:{voter_id}:{election_id}:{candidate_id}:{tx_hash}"
-            nullified_leaf = f"NULLIFIED:{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
-            
-            # Add the nullification marker to the tree
-            result = tree.add_leaf(nullified_leaf)
-            
-            # Update the election's Merkle root
-            vote.election.merkle_root = result['merkle_root']
-            vote.election.last_merkle_update = timezone.now()
-            vote.election.save(update_fields=['merkle_root', 'last_merkle_update'])
-            
-            # Store the nullification record in the vote object
-            vote.nullification_merkle_proof = result['merkle_proof']
-            vote.save(update_fields=['nullification_merkle_proof'])
-            
-            # Update cache
-            cache_key = MerkleService.get_tree_cache_key(vote.election_id)
-            cache.set(cache_key, pickle.dumps(tree), MerkleService.CACHE_TIMEOUT)
-            
-            # Log the event
-            logger.info(f"Updated Merkle tree for nullified vote {vote_id}, new root: {result['merkle_root']}")
-            
-            return {
-                'success': True,
-                'vote_id': vote_id,
-                'merkle_root': result['merkle_root'],
-                'proof_length': len(result['merkle_proof'])
-            }
-            
-        except Vote.DoesNotExist:
-            logger.error(f"Vote {vote_id} not found for nullification in Merkle tree")
-            return {
-                'success': False,
-                'error': f"Vote {vote_id} not found"
-            }
-        except Exception as e:
-            logger.error(f"Error updating Merkle tree for nullified vote {vote_id}: {str(e)}")
-            return {
-                'success': False,
                 'error': str(e)
             }

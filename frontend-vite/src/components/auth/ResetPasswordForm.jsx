@@ -16,6 +16,7 @@ const ResetPasswordForm = () => {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [tokenValid, setTokenValid] = useState(false);
+  const [email, setEmail] = useState('');
   
   const location = useLocation();
   const navigate = useNavigate();
@@ -24,7 +25,15 @@ const ResetPasswordForm = () => {
   // Get token from URL query params if not in URL path
   const searchParams = new URLSearchParams(location.search);
   const queryToken = searchParams.get('token');
+  const queryEmail = searchParams.get('email') || location.state?.email || '';
   const resetToken = token || queryToken;
+  
+  // Set email from query params or location state
+  useEffect(() => {
+    if (queryEmail) {
+      setEmail(queryEmail);
+    }
+  }, [queryEmail]);
   
   // Verify token on component mount
   useEffect(() => {
@@ -35,25 +44,32 @@ const ResetPasswordForm = () => {
         return;
       }
       
-      try {
-        // Verify the token with the API
-        await authAPI.verifyResetToken({ token: resetToken });
-        setTokenValid(true);
-      } catch (err) {
-        setError('This password reset link is invalid or has expired. Please request a new one.');
-      } finally {
+      // If we don't have an email, let user enter it
+      if (!email) {
         setIsVerifying(false);
+        return;
       }
+      
+      setIsVerifying(false);
+      setTokenValid(true);
+      
+      // Note: We're removing the token verification API call since 
+      // our backend doesn't have a separate endpoint for this.
+      // The token will be verified when we submit the reset form.
     };
     
     verifyToken();
-  }, [resetToken]);
+  }, [resetToken, email]);
   
   const handleChange = (e) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value
     });
+  };
+  
+  const handleEmailChange = (e) => {
+    setEmail(e.target.value);
   };
   
   const validatePassword = () => {
@@ -80,15 +96,17 @@ const ResetPasswordForm = () => {
       return;
     }
     
+    if (!email) {
+      setError('Email is required');
+      return;
+    }
+    
     setIsLoading(true);
     setError(null);
     
     try {
-      // Send password reset request
-      await authAPI.resetPassword({
-        token: resetToken,
-        new_password: formData.password
-      });
+      // Send password reset request with all required parameters
+      await authAPI.resetPassword(resetToken, formData.password, email);
       
       setSuccess('Your password has been reset successfully!');
       
@@ -97,7 +115,8 @@ const ResetPasswordForm = () => {
         navigate('/login', { state: { passwordResetSuccess: true } });
       }, 2000);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to reset password. Please try again.');
+      console.error('Password reset error:', err);
+      setError(err.response?.data?.error || 'Failed to reset password. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -116,7 +135,7 @@ const ResetPasswordForm = () => {
   }
   
   // Show error if token is invalid
-  if (!tokenValid && error) {
+  if (!tokenValid && error && error.includes('invalid')) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-md w-full">
@@ -155,7 +174,28 @@ const ResetPasswordForm = () => {
         {success && <Alert type="success" message={success} />}
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="rounded-md shadow-sm -space-y-px">
+          {!queryEmail && (
+            <div className="mb-4">
+              <TextInput
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={handleEmailChange}
+                label="Email address"
+                placeholder="Enter your email address"
+                required
+                autoFocus
+                fullWidth
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Please enter the email associated with your account.
+              </p>
+            </div>
+          )}
+          
+          <div className="rounded-md shadow-sm">
             <div className="mb-4">
               <TextInput
                 id="password"
@@ -164,9 +204,11 @@ const ResetPasswordForm = () => {
                 autoComplete="new-password"
                 value={formData.password}
                 onChange={handleChange}
-                placeholder="New Password"
+                label="New Password"
+                placeholder="Enter your new password"
                 required
-                autoFocus
+                autoFocus={!!queryEmail}
+                fullWidth
               />
               <p className="mt-1 text-xs text-gray-500">
                 Password must be at least 8 characters and include a number and a special character.
@@ -181,8 +223,10 @@ const ResetPasswordForm = () => {
                 autoComplete="new-password"
                 value={formData.confirmPassword}
                 onChange={handleChange}
-                placeholder="Confirm New Password"
+                label="Confirm New Password"
+                placeholder="Confirm your new password"
                 required
+                fullWidth
               />
             </div>
           </div>
@@ -192,7 +236,7 @@ const ResetPasswordForm = () => {
               type="submit"
               variant="primary"
               fullWidth
-              disabled={!formData.password || !formData.confirmPassword || isLoading}
+              disabled={!email || !formData.password || !formData.confirmPassword || isLoading}
             >
               {isLoading ? <LoadingSpinner size="small" color="white" /> : 'Reset Password'}
             </Button>

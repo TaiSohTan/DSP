@@ -598,41 +598,10 @@ class ResetPasswordView(APIView):
 
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
-def nullification_requests(request):
-    """Get all vote nullification requests."""
-    election_id = request.query_params.get('election_id')
-    
-    # Base query - get votes with any nullification status (or filter if requested)
-    query = Vote.objects.exclude(nullification_status='none')
-    
-    # Filter by election if provided
-    if election_id:
-        query = query.filter(election_id=election_id)
-        
-    # Order by requested date
-    query = query.order_by('-nullification_requested_at')
-    
-    # Prepare response data
-    result = []
-    for vote in query:
-        result.append({
-            'id': vote.id,
-            'vote_id': vote.id,
-            'voter_id': vote.voter.id,
-            'voter_name': vote.voter.full_name,
-            'voter_email': vote.voter.email,
-            'election_id': vote.election.id,
-            'election_title': vote.election.title,
-            'candidate_id': vote.candidate.id,
-            'candidate_name': vote.candidate.name,
-            'vote_timestamp': vote.timestamp,
-            'requested_at': vote.nullification_requested_at,
-            'reason': vote.nullification_reason,
-            'status': vote.nullification_status,
-            'admin_response': vote.nullification_rejection_reason if vote.nullification_status == 'rejected' else None,
-        })
-    
-    return Response(result)
+def admin_dashboard_data(request):
+    """Get admin dashboard data for client-side rendering."""
+    # Implementation of admin dashboard data retrieval would go here
+    return Response({})
 
 class AdminDashboardView(APIView):
     """
@@ -669,11 +638,6 @@ class AdminDashboardView(APIView):
         confirmed_votes = Vote.objects.filter(is_confirmed=True).count()
         pending_votes = Vote.objects.filter(is_confirmed=False).count()
         
-        # Get nullification statistics
-        pending_nullifications = Vote.objects.filter(nullification_status='pending').count()
-        approved_nullifications = Vote.objects.filter(nullification_status='nullified').count()
-        rejected_nullifications = Vote.objects.filter(nullification_status='rejected').count()
-        
         # Get blockchain statistics
         from blockchain.models import EthereumWallet, Transaction
         total_wallets = EthereumWallet.objects.count()
@@ -698,11 +662,6 @@ class AdminDashboardView(APIView):
                 'total': total_votes,
                 'confirmed': confirmed_votes,
                 'pending': pending_votes
-            },
-            'nullifications': {
-                'pending': pending_nullifications,
-                'approved': approved_nullifications,
-                'rejected': rejected_nullifications
             },
             'blockchain': {
                 'wallets': total_wallets,

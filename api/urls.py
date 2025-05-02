@@ -21,7 +21,7 @@ from .views_election import (
     election_stats,
     direct_pdf_download
 )
-from .views_admin import admin_users, admin_user_detail, admin_verify_user, system_status
+from .views_admin import admin_users, admin_user_detail, admin_verify_user, system_status, check_vote_tampering
 from .views_settings import SystemSettingsView, ResetSystemSettingsView
 
 # Create a router for ViewSets
@@ -57,6 +57,7 @@ urlpatterns = [
     path('admin/users/', admin_users, name='admin-users'),
     path('admin/users/<str:user_id>/', admin_user_detail, name='admin-user-detail'),
     path('admin/users/<str:user_id>/verify/', admin_verify_user, name='admin-verify-user'),
+    path('admin/check-tampering/', check_vote_tampering, name='check-vote-tampering'),
     
     # Public verification endpoints
     path('votes/<uuid:pk>/public_receipt/', VoteViewSet.as_view({'get': 'public_receipt'}), name='public-vote-receipt'),

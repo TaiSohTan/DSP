@@ -36,15 +36,6 @@ class OTPService:
     
     # Flag to control service usage vs. logging (for development)
     USE_SMS_SERVICE = getattr(settings, 'USE_SMS_SERVICE', False)
-    """
-        Generate a random OTP of specified length.
-        
-        Args:
-            length: Length of the OTP (default: 6)
-        
-        Returns:
-            A random OTP string
-        """
     @classmethod
     def generate_otp(cls, length: int = 6) -> str:
         
@@ -56,17 +47,6 @@ class OTPService:
     
     @classmethod
     def _get_cache_key(cls, identifier: str, is_email: bool = True, is_reset_token: bool = False) -> str:
-        """
-        Get the cache key for storing OTP or reset token.
-        
-        Args:
-            identifier: Email or phone number
-            is_email: Whether the identifier is an email (True) or phone (False)
-            is_reset_token: Whether this is for a password reset token
-            
-        Returns:
-            Cache key string
-        """
         # Normalize and hash the identifier for security
         normalized = identifier.lower().strip()
         hashed = hashlib.sha256(normalized.encode()).hexdigest()[:16]
@@ -79,17 +59,6 @@ class OTPService:
     
     # Email configuration - set these in settings.py or environment variables
     USE_EMAIL_SERVICE = getattr(settings, 'USE_EMAIL_SERVICE', True)
-    """
-        Generate and send OTP via email.
-        Also logs the OTP for development purposes.
-        
-        Args:
-            email: Email address to send OTP to
-            purpose: Purpose of the OTP (for the email subject)
-            
-        Returns:
-            True if the email was sent successfully or logged, False otherwise
-        """
     @classmethod
     def send_email_otp(cls, email: str, purpose: str = "verification") -> bool:
         
@@ -146,17 +115,6 @@ class OTPService:
     
     @classmethod
     def send_sms_otp(cls, phone_number: str, purpose: str = "verification") -> bool:
-        """
-        Generate and send OTP via SMS using Twilio.
-        Also logs the OTP for development purposes.
-        
-        Args:
-            phone_number: Phone number to send OTP to
-            purpose: Purpose of the OTP (for the SMS text)
-            
-        Returns:
-            True if the SMS was sent successfully or logged, False otherwise
-        """
         otp = cls.generate_otp()
         cache_key = cls._get_cache_key(phone_number, is_email=False)
         
@@ -198,16 +156,7 @@ class OTPService:
             logger.info("Twilio service not configured, using log-based OTP only")
             # Return True since we're using the logged OTP for verification
             return True
-    """
-        Generate a password reset token and store it in cache.
-        
-        Args:
-            email: The user's email address
-            
-        Returns:
-            Generated password reset token
-    """
-    
+       
     @classmethod
     def generate_password_reset_token(cls, email: str) -> str:
        
@@ -234,16 +183,6 @@ class OTPService:
     
     @classmethod
     def send_password_reset_email(cls, email: str, token: str) -> bool:
-        """
-        Send password reset link via email.
-        
-        Args:
-            email: Email address to send reset link to
-            token: The password reset token
-            
-        Returns:
-            True if the email was sent successfully or logged, False otherwise
-        """
         # Create the reset link
         reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
         
@@ -292,16 +231,6 @@ class OTPService:
     
     @classmethod
     def verify_password_reset_token(cls, email: str, token: str) -> bool:
-        """
-        Verify a password reset token against the stored value.
-        
-        Args:
-            email: The user's email
-            token: The token to verify
-            
-        Returns:
-            True if token is valid, False otherwise
-        """
         cache_key = cls._get_cache_key(email, is_email=True, is_reset_token=True)
         stored_token = cache.get(cache_key)
         
@@ -330,17 +259,6 @@ class OTPService:
         
     @classmethod
     def verify_otp(cls, identifier: str, otp: str, is_email: bool = True) -> bool:
-        """
-        Verify an OTP against the stored value.
-        
-        Args:
-            identifier: Email or phone number
-            otp: The OTP to verify
-            is_email: Whether the identifier is an email (True) or phone (False)
-            
-        Returns:
-            True if OTP is valid, False otherwise
-        """
         cache_key = cls._get_cache_key(identifier, is_email)
         stored_otp = cache.get(cache_key)
         

@@ -76,7 +76,7 @@ export const authAPI = {
   sendEmailOTP: () => api.post('/api/send-email-otp/'),
   verifyPhoneOTP: (phoneNumber, otp) => api.post('/api/verify-phone-otp/', { phone_number: phoneNumber, otp: otp }),
   resetPasswordRequest: (email) => api.post('/api/users/request-password-reset/', { email }),
-  resetPassword: (token, password) => api.post('/api/users/reset-password/', { token, password }),
+  resetPassword: (token, password, email) => api.post('/api/users/reset-password/', { token, password, email }),
   refreshToken: (refreshToken) => api.post('/api/token/refresh/', { refresh: refreshToken }),
   getProfile: () => api.get('/api/profile/'),
   getCurrentUser: () => api.get('/api/profile/'), // Add this method to get current user data
@@ -127,6 +127,7 @@ export const voteAPI = {
     email_otp: emailOtp
   }),
   verifyVote: (voteId) => api.get(`/api/votes/${voteId}/verify/`),
+  verifyMerkleProof: (voteId) => api.get(`/api/votes/${voteId}/verify-merkle/`),
   getUserVotes: () => api.get('/api/votes/my_votes/'),
   getVoteDetails: (voteId) => api.get(`/api/votes/${voteId}/`),
   // Updated to match the correct endpoint path with query parameters
@@ -192,7 +193,7 @@ export const adminAPI = {
   getElectionStats: () => api.get('/api/admin/election-stats/'),
   // Blockchain related methods
   getBlockchainStatus: () => api.get('/api/blockchain/status/'),
-  syncBlockchain: () => api.post('/api/blockchain/sync/'),
+  checkVoteTampering: () => api.get('/api/admin/check-tampering/'),
 };
 
 export default api;

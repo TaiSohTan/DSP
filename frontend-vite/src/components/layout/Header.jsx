@@ -44,9 +44,9 @@ const Header = () => {
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight group-hover:text-primary-100 transition-colors duration-300">
-                    Secure Voting System
+                    VoteChain
                   </h1>
-                  <p className="text-sm text-primary-200 italic font-light">Blockchain-powered elections</p>
+                  <p className="text-sm text-primary-200 italic font-light">Ethereum-Based Blockchain Voting System</p>
                 </div>
               </div>
             </Link>

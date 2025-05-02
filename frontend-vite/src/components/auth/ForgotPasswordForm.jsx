@@ -24,8 +24,8 @@ const ForgotPasswordForm = () => {
     setError(null);
     
     try {
-      // Send password reset request
-      await authAPI.requestPasswordReset({ email });
+      // Send password reset request - fixed to use the correct method name
+      await authAPI.resetPasswordRequest(email);
       
       setSuccess(
         'A password reset link has been sent to your email address. ' +
@@ -59,7 +59,7 @@ const ForgotPasswordForm = () => {
         {success && <Alert type="success" message={success} />}
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="rounded-md shadow-sm -space-y-px">
+          <div className="rounded-md shadow-sm">
             <TextInput
               id="email"
               name="email"
@@ -70,6 +70,8 @@ const ForgotPasswordForm = () => {
               placeholder="Email address"
               required
               autoFocus
+              fullWidth
+              className="mx-auto"
             />
           </div>
           

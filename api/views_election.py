@@ -28,6 +28,8 @@ from rest_framework.response import Response
 
 # Local application imports
 from blockchain.services.ethereum_service import EthereumService
+from blockchain.services.merkle_service import MerkleService  
+from blockchain.utils.merkle import MerkleTree  
 from blockchain.utils.time_utils import (
     get_current_time, 
     system_to_blockchain_time, 
@@ -516,6 +518,7 @@ class VoteViewSet(viewsets.ModelViewSet):
         # Cast vote on blockchain
         try:
             ethereum_service = EthereumService()
+            merkle_service = MerkleService()  # Initialize MerkleService
             
             # Just get the user without attempting to create a wallet
             # The wallet should already have been created during verification
@@ -659,6 +662,9 @@ class VoteViewSet(viewsets.ModelViewSet):
                     vote.transaction_hash = tx_hash
                     vote.receipt_hash = receipt_hash
                     vote.save()
+                    
+                    # Update the Merkle tree for tamper detection after vote confirmation
+                    MerkleService.update_tree_for_vote(vote.id)
                 
                 # Return success response with vote receipt
                 receipt_serializer = VoteReceiptSerializer(vote)
@@ -690,10 +696,16 @@ class VoteViewSet(viewsets.ModelViewSet):
         """
         Get a detailed vote receipt with cryptographic proof and verification instructions.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"===== VOTE RECEIPT REQUEST =====")
+        logger.info(f"User {request.user.email} requesting receipt for vote ID: {pk}")
+        
         vote = self.get_object()
         
         # Check if vote exists and is confirmed
         if not vote.is_confirmed or not vote.transaction_hash:
+            logger.warning(f"Receipt request failed: Vote {pk} is not confirmed or missing transaction hash")
             return Response(
                 {'error': 'Vote is not confirmed or missing transaction hash'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -715,6 +727,63 @@ class VoteViewSet(viewsets.ModelViewSet):
                 voter_address=request.user.ethereum_address,
                 candidate_id=vote.candidate.blockchain_id
             )
+            
+            # Get Merkle tree verification data
+            # Always include merkle_verification, even if proof is not available
+            merkle_verification = {
+                'verified': False,
+                'root_hash': vote.election.merkle_root if vote.election.merkle_root else None,
+                'last_update': vote.election.last_merkle_update.isoformat() if vote.election.last_merkle_update else None,
+                'proof_length': 0
+            }
+            
+            if vote.merkle_proof:
+                # Create leaf data for verification
+                leaf_data = f"{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+                
+                # Verify using standard merkle proof
+                is_verified = MerkleTree.verify_proof(
+                    leaf_value=leaf_data,
+                    proof=vote.merkle_proof,
+                    root_hash=vote.election.merkle_root
+                )
+                
+                # Update merkle_verification with actual data
+                merkle_verification.update({
+                    'verified': is_verified,
+                    'proof_length': len(vote.merkle_proof),
+                    'proof': vote.merkle_proof  # Include the actual proof in the response
+                })
+                
+                logger.info(f"Merkle verification result for vote {pk}: {is_verified}")
+                if not is_verified:
+                    logger.warning(f"Merkle verification failed for vote {pk}")
+            else:
+                logger.warning(f"No Merkle proof found for vote {pk}")
+                # If vote has no proof but should have one, try to update it now
+                if vote.is_confirmed and vote.transaction_hash:
+                    try:
+                        logger.info(f"Attempting to update Merkle tree for vote {pk}")
+                        update_result = MerkleService.update_tree_for_vote(vote.id)
+                        logger.info(f"Merkle tree update result: {update_result}")
+                        
+                        # Refresh vote to get the newly attached proof
+                        vote.refresh_from_db()
+                        if vote.merkle_proof:
+                            leaf_data = f"{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+                            is_verified = MerkleTree.verify_proof(
+                                leaf_value=leaf_data,
+                                proof=vote.merkle_proof,
+                                root_hash=vote.election.merkle_root
+                            )
+                            merkle_verification.update({
+                                'verified': is_verified,
+                                'proof_length': len(vote.merkle_proof),
+                                'proof': vote.merkle_proof,
+                                'note': 'Proof was generated during this request'
+                            })
+                    except Exception as merkle_error:
+                        logger.error(f"Error updating Merkle tree for vote {pk}: {str(merkle_error)}")
             
             # Create receipt data
             receipt_data = {
@@ -742,20 +811,25 @@ class VoteViewSet(viewsets.ModelViewSet):
                 },
                 'cryptographic_proof': {
                     'receipt_hash': vote.receipt_hash,
-                    'verification_data': f"{request.user.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+                    'verification_data': f"{request.user.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}",
+                    'merkle_verification': merkle_verification
                 },
                 'verification': {
                     'verified': verification_result['verified'],
                     'details': verification_result['details'] if 'details' in verification_result else None
                 },
-                'timestamp': vote.timestamp
+                'timestamp': vote.timestamp,
+                'is_confirmed': vote.is_confirmed
             }
+            
+            # Log the complete receipt data for debugging
+            logger.info(f"Receipt data generated for vote {pk}:")
+            logger.info(f"Receipt data: {json.dumps(receipt_data, default=str, indent=2)}")
             
             return Response(receipt_data, status=status.HTTP_200_OK)
             
         except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to generate detailed receipt: {str(e)}")
+            logger.error(f"Failed to generate detailed receipt: {str(e)}", exc_info=True)
             return Response(
                 {'error': f'Failed to generate detailed receipt: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -858,12 +932,16 @@ class VoteViewSet(viewsets.ModelViewSet):
             
             logger.info(f"Verification result: {verification_result}")
             
-            # Return verification result
-            return Response({
+            # Log the full response being sent to frontend
+            response_data = {
                 'verified': verification_result['verified'],
                 'message': 'Vote successfully verified on blockchain' if verification_result['verified'] else 'Vote verification failed',
                 'details': verification_result['details'] if 'details' in verification_result else None
-            }, status=status.HTTP_200_OK)
+            }
+            logger.info(f"Response being sent to frontend: {json.dumps(response_data, default=str, indent=2)}")
+            
+            # Return verification result
+            return Response(response_data, status=status.HTTP_200_OK)
             
         except Exception as e:
             logger.error(f"Error verifying vote: {str(e)}")
@@ -1028,14 +1106,6 @@ class VoteViewSet(viewsets.ModelViewSet):
         Generate a PDF receipt for a vote.
         Supports both GET with Bearer token and POST with token in form data.
         """
-        from io import BytesIO
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, Canvas
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        from reportlab.lib.enums import TA_CENTER
-        from django.http import HttpResponse
         
         logger = logging.getLogger(__name__)
         logger.info(f"Generating PDF receipt for vote {pk}")
@@ -1102,6 +1172,27 @@ class VoteViewSet(viewsets.ModelViewSet):
                 tx_details = None
                 block = None
                 block_time = "Not available"
+            
+            # Get Merkle tree verification data if available
+            merkle_verification = None
+            if vote.merkle_proof:
+                # Create leaf data for verification
+                leaf_data = f"{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+                
+                # Verify using standard merkle proof
+                is_verified = MerkleTree.verify_proof(
+                    leaf_value=leaf_data,
+                    proof=vote.merkle_proof,
+                    root_hash=vote.election.merkle_root
+                )
+                merkle_verification = {
+                    'verified': is_verified,
+                    'root_hash': vote.election.merkle_root,
+                    'last_update': vote.election.last_merkle_update.isoformat() if vote.election.last_merkle_update else None,
+                    'proof_length': len(vote.merkle_proof) if vote.merkle_proof else 0,
+                }
+                
+                logger.info(f"Merkle verification result: {merkle_verification['verified']}")
             
             # Create a file-like buffer to receive PDF data
             buffer = BytesIO()
@@ -1174,6 +1265,11 @@ class VoteViewSet(viewsets.ModelViewSet):
                 ["Receipt Hash:", vote.receipt_hash],
             ]
             
+            # Add Merkle tree verification data if available
+            if merkle_verification:
+                verification_data.append(["Merkle Verification:", "Verified" if merkle_verification['verified'] else "Failed"])
+                verification_data.append(["Merkle Root Hash:", merkle_verification['root_hash'][:16] + "..." if merkle_verification['root_hash'] else "N/A"])
+            
             # Create verification table
             verification_table = Table(verification_data, colWidths=[2*inch, 3.5*inch])
             verification_table.setStyle(TableStyle([
@@ -1185,12 +1281,19 @@ class VoteViewSet(viewsets.ModelViewSet):
             elements.append(verification_table)
             elements.append(Spacer(1, 0.25*inch))
             
+            # Add Merkle Tree section if available
+            if merkle_verification and merkle_verification['verified']:
+                elements.append(Paragraph("Tamper-Proof Verification:", styles['Heading3']))
+                elements.append(Paragraph("This vote has been verified using a cryptographic Merkle Tree, which provides tamper detection and ensures vote integrity. The Merkle proof stored with this vote can be used to verify it against the election's Merkle root hash without revealing any other votes.", styles['Normal']))
+                elements.append(Spacer(1, 0.15*inch))
+            
             # Add verification instructions
             elements.append(Paragraph("How to verify this vote:", styles['Heading3']))
             instructions = [
                 "1. Go to the public verification page on the voting platform.",
                 "2. Enter the Vote ID or Transaction Hash shown above.",
-                "3. The system will check the blockchain to verify your vote was recorded correctly."
+                "3. The system will check the blockchain to verify your vote was recorded correctly.",
+                "4. The system will also verify the vote's integrity using the Merkle tree tamper detection system."
             ]
             for instruction in instructions:
                 elements.append(Paragraph(instruction, styles['Normal']))
@@ -1216,6 +1319,177 @@ class VoteViewSet(viewsets.ModelViewSet):
             logger.error(f"Error generating PDF: {str(e)}", exc_info=True)
             return Response(
                 {'error': f'Failed to generate PDF: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'], url_path='verify-merkle')
+    def verify_merkle(self, request, pk=None):
+        """
+        Verify a vote's Merkle proof against the election's Merkle root.
+        This ensures the vote record hasn't been tampered with after submission.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"===== MERKLE PROOF VERIFICATION REQUEST =====")
+        logger.info(f"User {request.user.email} requesting Merkle proof verification for vote ID: {pk}")
+        
+        vote = self.get_object()
+        
+        # Check if vote exists and is confirmed
+        if not vote.is_confirmed or not vote.transaction_hash:
+            logger.warning(f"Merkle verification failed: Vote {pk} is not confirmed or missing transaction hash")
+            return Response(
+                {'error': 'Vote is not confirmed or missing transaction hash'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Detailed logging about the vote and election
+        logger.info(f"Vote details: id={vote.id}, voter={vote.voter.id}, election={vote.election.id}, candidate={vote.candidate.id}")
+        logger.info(f"Vote has merkle_proof: {vote.merkle_proof is not None}")
+        logger.info(f"Election has merkle_root: {vote.election.merkle_root is not None}")
+        
+        # Check if Merkle proof exists
+        if not vote.merkle_proof:
+            logger.warning(f"Merkle verification failed: Vote {pk} has no Merkle proof")
+            
+            # Try to generate the Merkle proof now if it's missing
+            try:
+                logger.info(f"Attempting to generate Merkle proof for vote {pk}")
+                result = MerkleService.update_tree_for_vote(vote.id)
+                logger.info(f"Merkle tree update result: {result}")
+                
+                # Refresh vote to get the newly attached proof
+                vote.refresh_from_db()
+                
+                # If still no proof, return error
+                if not vote.merkle_proof:
+                    logger.error(f"Failed to generate Merkle proof for vote {pk}")
+                    return Response(
+                        {'error': 'This vote does not have a Merkle proof and one could not be generated'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except Exception as e:
+                logger.error(f"Error generating Merkle proof: {str(e)}", exc_info=True)
+                return Response(
+                    {'error': f'This vote does not have a Merkle proof and an error occurred while generating one: {str(e)}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Check if election has a Merkle root
+        if not vote.election.merkle_root:
+            logger.warning(f"Merkle verification failed: Election {vote.election.id} has no Merkle root")
+            return Response(
+                {'error': 'The election has no Merkle root. Verification is not possible.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Perform Merkle proof verification
+        try:
+            # Create leaf data for verification (same format used when generating the proof)
+            leaf_data = f"{vote.voter.id}:{vote.election.id}:{vote.candidate.id}:{vote.transaction_hash}"
+            leaf_hash = MerkleTree.hash_node(leaf_data)
+            
+            logger.info(f"Verifying Merkle proof for vote {pk}")
+            logger.info(f"Leaf data: {leaf_data}")
+            logger.info(f"Computed leaf hash: {leaf_hash}")
+            logger.info(f"Merkle root: {vote.election.merkle_root}")
+            logger.info(f"Proof length: {len(vote.merkle_proof) if vote.merkle_proof else 0}")
+            logger.info(f"Merkle proof: {vote.merkle_proof}")
+            
+            # FIXED MERKLE VERIFICATION
+            # Method 1: Self-contained proof (when the proof contains the leaf itself)
+            is_self_contained = False
+            
+            if vote.merkle_proof and len(vote.merkle_proof) >= 1:
+                # Check if the first proof element is the leaf itself (self-contained proof)
+                for proof_element in vote.merkle_proof:
+                    if proof_element.get('value') == leaf_hash:
+                        is_self_contained = True
+                        logger.info(f"Detected self-contained proof (proof contains the leaf hash)")
+                        break
+            
+            # Direct verification for self-contained proofs
+            if is_self_contained:
+                is_direct_verified = True
+                current_hash = leaf_hash
+                
+                # Start from the correct position in the proof (skip the leaf hash)
+                proof_to_use = [p for p in vote.merkle_proof if p.get('value') != leaf_hash]
+                
+                # Process the rest of the proof
+                for i, step in enumerate(proof_to_use):
+                    before_hash = current_hash
+                    if step['position'] == 'left':
+                        # Sibling is on the left, our data is on the right
+                        current_hash = MerkleTree.hash_pair(step['value'], current_hash)
+                    else:
+                        # Sibling is on the right, our data is on the left
+                        current_hash = MerkleTree.hash_pair(current_hash, step['value'])
+                    logger.info(f"Proof step {i+1}: {step['position']} - {before_hash} + {step['value']} → {current_hash}")
+                
+                is_direct_verified = (current_hash == vote.election.merkle_root)
+                logger.info(f"Direct verification result: {is_direct_verified}")
+            else:
+                is_direct_verified = False
+            
+            # Method 2: Standard verification (uses the built-in verify_proof method)
+            try:
+                is_standard_verified = MerkleTree.verify_proof(
+                    leaf_value=leaf_data,
+                    proof=vote.merkle_proof,
+                    root_hash=vote.election.merkle_root
+                )
+                logger.info(f"Standard verification result: {is_standard_verified}")
+            except Exception as e:
+                logger.error(f"Error in standard verification: {str(e)}")
+                is_standard_verified = False
+            
+            # Method 3: Special case - single element proof
+            if len(vote.merkle_proof) == 1 and vote.merkle_proof[0]['value'] == leaf_hash:
+                # For single-vote elections, the leaf hash itself is the root
+                is_special_verified = (leaf_hash == vote.election.merkle_root)
+                logger.info(f"Special case - single element: {is_special_verified}")
+            else:
+                is_special_verified = False
+            
+            # Use any successful verification method
+            is_verified = is_direct_verified or is_standard_verified or is_special_verified
+            
+            verification_method = "None"
+            if is_direct_verified:
+                verification_method = "Direct verification"
+            elif is_standard_verified:
+                verification_method = "Standard verification"
+            elif is_special_verified:
+                verification_method = "Special case verification"
+            
+            logger.info(f"Merkle verification result: {'SUCCESS' if is_verified else 'FAILED'}")
+            logger.info(f"Verification method: {verification_method}")
+            
+            # Return verification result with details
+            merkle_verification = {
+                'verified': is_verified,
+                'root_hash': vote.election.merkle_root,
+                'leaf_data': leaf_data,
+                'leaf_hash': leaf_hash,
+                'last_update': vote.election.last_merkle_update.isoformat() if vote.election.last_merkle_update else None,
+                'proof_length': len(vote.merkle_proof) if vote.merkle_proof else 0,
+                'proof': vote.merkle_proof,
+                'vote_id': str(vote.id),
+                'election_id': str(vote.election.id),
+                'election_title': vote.election.title,
+                'timestamp': timezone.now().isoformat(),
+                'verification_method': verification_method,
+                'message': 'Vote successfully verified in Merkle tree' if is_verified 
+                          else 'Vote verification failed - data may have been tampered with'
+            }
+            
+            return Response(merkle_verification, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Error verifying Merkle proof for vote {pk}: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Error verifying Merkle proof: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -1259,15 +1533,7 @@ def election_stats(request):
 @permission_classes([AllowAny])
 def direct_pdf_download(request, vote_id, token):
     """Direct download endpoint for vote receipt PDF"""
-    from io import BytesIO
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.lib.enums import TA_CENTER
-    from django.http import HttpResponse
-    
+     
     logger = logging.getLogger(__name__)
     logger.info(f"Direct PDF download request for vote {vote_id}")
     

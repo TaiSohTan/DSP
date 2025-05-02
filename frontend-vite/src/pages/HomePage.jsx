@@ -78,7 +78,7 @@ const HomePage = () => {
               className="text-4xl sm:text-5xl lg:text-6xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-white to-primary-100"
               variants={fadeIn}
             >
-              Secure Blockchain Voting System
+              VoteChain
             </motion.h1>
             
             <motion.p 
@@ -159,54 +159,7 @@ const HomePage = () => {
         <svg className="absolute bottom-0 left-0 right-0 text-gray-50" viewBox="0 0 1440 80" preserveAspectRatio="none">
           <path d="M0,32L60,37.3C120,43,240,53,360,58.7C480,64,600,64,720,56C840,48,960,32,1080,26.7C1200,21,1320,27,1380,29.3L1440,32L1440,80L1380,80C1320,80,1200,80,1080,80C960,80,840,80,720,80C600,80,480,80,360,80C240,80,120,80,60,80L0,80Z" fill="currentColor"></path>
         </svg>
-      </div>
-
-      {/* Stats Section */}
-      <div 
-        ref={statsSectionRef} 
-        className="py-16 bg-gray-50"
-      >
-        <motion.div 
-          className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8"
-          initial="hidden"
-          animate={statsInView ? "visible" : "hidden"}
-          variants={fadeIn}
-        >
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-            <motion.div 
-              className="bg-white p-6 rounded-xl shadow-sm text-center"
-              variants={scaleUp}
-            >
-              <h3 className="text-4xl font-bold text-primary-600">100%</h3>
-              <p className="text-gray-500 mt-2">Transparent</p>
-            </motion.div>
-
-            <motion.div 
-              className="bg-white p-6 rounded-xl shadow-sm text-center"
-              variants={scaleUp}
-            >
-              <h3 className="text-4xl font-bold text-primary-600">2M+</h3>
-              <p className="text-gray-500 mt-2">Votes Processed</p>
-            </motion.div>
-
-            <motion.div 
-              className="bg-white p-6 rounded-xl shadow-sm text-center"
-              variants={scaleUp}
-            >
-              <h3 className="text-4xl font-bold text-primary-600">99.9%</h3>
-              <p className="text-gray-500 mt-2">Uptime</p>
-            </motion.div>
-
-            <motion.div 
-              className="bg-white p-6 rounded-xl shadow-sm text-center"
-              variants={scaleUp}
-            >
-              <h3 className="text-4xl font-bold text-primary-600">10K+</h3>
-              <p className="text-gray-500 mt-2">Active Users</p>
-            </motion.div>
-          </div>
-        </motion.div>
-      </div>
+      </div>      
 
       {/* Features Section */}
       <div 

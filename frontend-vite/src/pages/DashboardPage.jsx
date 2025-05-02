@@ -481,6 +481,8 @@ const DashboardPage = () => {
                         <div className="text-xs font-bold text-purple-800">
                           {(() => {
                             const startDate = new Date(election.start_date);
+                            // Subtract 1 hour from start date for display
+                            startDate.setHours(startDate.getHours() - 1);
                             const now = new Date();
                             const diff = startDate - now;
                             

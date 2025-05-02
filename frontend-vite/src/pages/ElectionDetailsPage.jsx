@@ -30,12 +30,23 @@ const timeUtils = {
   }
 };
 
-// Utility function to format UTC dates without timezone conversion
-const formatUTCDate = (dateString) => {
+// Format date function
+const formatDate = (dateString) => {
   if (!dateString) return '';
-  // Extract date and time parts directly from the string without using Date object
-  // This avoids browser timezone conversions
-  return dateString.replace('T', ' ').replace(/\.\d+Z$/, '').replace('Z', '');
+  
+  // Format using built-in functions with proper options
+  // This is more reliable than manually manipulating the date
+  const options = { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric', 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: true
+  };
+  
+  // Using the system's locale settings for proper formatting
+  return new Date(dateString).toLocaleString(undefined, options);
 };
 
 const ElectionDetailsPage = () => {
@@ -117,23 +128,24 @@ const ElectionDetailsPage = () => {
         
         // Fetch election details
         const electionResponse = await electionAPI.getElection(id);
+        console.log('Election API response:', electionResponse.data);
         
         // Calculate status based on current date and election dates
-        const now = timeUtils.getCurrentTime(); // Use timezone-adjusted time
+        const now = timeUtils.getCurrentTime(); // Use GMT+1 timezone
         const startDate = timeUtils.parseDate(electionResponse.data.start_date);
         const endDate = timeUtils.parseDate(electionResponse.data.end_date);
         
         console.log('Time comparison for status calculation:');
-        console.log('Current time (adjusted):', now.toISOString());
-        console.log('Start date from API:', startDate.toISOString());
-        console.log('End date from API:', endDate.toISOString());
-        console.log('now < startDate:', now < startDate);
-        console.log('now >= startDate && now <= endDate:', now >= startDate && now <= endDate);
+        console.log('Current time (GMT+1):', now.toISOString());
+        console.log('Start date from API:', startDate?.toISOString() || 'null');
+        console.log('End date from API:', endDate?.toISOString() || 'null');
+        console.log('now < startDate:', startDate ? now < startDate : 'startDate is null');
+        console.log('now >= startDate && now <= endDate:', startDate && endDate ? now >= startDate && now <= endDate : 'date is null');
         
         let status = 'upcoming';
-        if (now > endDate) {
+        if (endDate && now > endDate) {
           status = 'completed';
-        } else if (startDate <= now && now <= endDate) {
+        } else if (startDate && endDate && startDate <= now && now <= endDate) {
           status = 'active';
         }
         
@@ -148,23 +160,29 @@ const ElectionDetailsPage = () => {
         
         // Fetch candidates 
         const candidatesResponse = await electionAPI.getCandidates(id);
+        console.log('Candidates API response:', candidatesResponse.data);
         setCandidates(candidatesResponse.data);
         
         // Check if user has already voted
-        const userVoteResponse = await voteAPI.checkUserVote(id);
-        console.log('User vote response:', userVoteResponse.data);
-        
-        // Only consider the user as having voted if the vote is not nullified
-        // A vote with nullification_status='nullified' should allow the user to vote again
-        if (userVoteResponse.data.has_voted) {
-          if (userVoteResponse.data.vote && 
-              userVoteResponse.data.vote.nullification_status === 'nullified') {
-            // If the vote was nullified, the user can vote again
-            setHasVoted(false);
-            console.log('Vote was nullified, allowing to vote again');
-          } else {
-            setHasVoted(true);
+        try {
+          const userVoteResponse = await voteAPI.checkUserVote(id);
+          console.log('User vote response:', userVoteResponse.data);
+          
+          // Only consider the user as having voted if the vote is not nullified
+          // A vote with nullification_status='nullified' should allow the user to vote again
+          if (userVoteResponse.data.has_voted) {
+            if (userVoteResponse.data.vote && 
+                userVoteResponse.data.vote.nullification_status === 'nullified') {
+              // If the vote was nullified, the user can vote again
+              setHasVoted(false);
+              console.log('Vote was nullified, allowing to vote again');
+            } else {
+              setHasVoted(true);
+            }
           }
+        } catch (voteErr) {
+          console.error('Error checking if user has voted:', voteErr);
+          // Don't set an error for vote check failure
         }
         
         // If election is completed and we don't already have results, fetch them
@@ -180,7 +198,29 @@ const ElectionDetailsPage = () => {
         }
       } catch (err) {
         console.error('Error fetching election details:', err);
-        setError('Failed to load election details. Please try again.');
+        let errorMsg = 'Failed to load election details. Please try again.';
+        
+        // Extract more specific error message from the response if available
+        if (err.response) {
+          console.error('API error response:', err.response);
+          if (err.response.data && err.response.data.error) {
+            errorMsg = err.response.data.error;
+          } else if (err.response.data && err.response.data.detail) {
+            errorMsg = err.response.data.detail;
+          } else if (err.response.status === 404) {
+            errorMsg = 'Election not found. It may have been deleted or you do not have permission to view it.';
+          }
+        } else if (err.request) {
+          // Request was made but no response received
+          console.error('No response received:', err.request);
+          errorMsg = 'Server did not respond. Please check your connection and try again.';
+        } else {
+          // Something else caused the error
+          console.error('Error message:', err.message);
+          errorMsg = `Error: ${err.message}`;
+        }
+        
+        setError(errorMsg);
       } finally {
         setIsLoading(false);
       }
@@ -332,28 +372,6 @@ const ElectionDetailsPage = () => {
     }
   };
 
-  // Format date function
-  const formatDate = (dateString) => {
-    if (!dateString) return '';
-    
-    // First, create a Date object from the dateString
-    const date = new Date(dateString);
-    
-    // Format using built-in functions with proper options
-    // This is more reliable than manually manipulating the date
-    const options = { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric', 
-      hour: '2-digit', 
-      minute: '2-digit',
-      hour12: true
-    };
-    
-    // Using the system's locale settings for proper formatting
-    return date.toLocaleString(undefined, options);
-  };
-
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-96">
@@ -372,7 +390,7 @@ const ElectionDetailsPage = () => {
           <div className="flex">
             <div className="flex-shrink-0">
               <svg className="h-6 w-6 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293-1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
               </svg>
             </div>
             <div className="ml-3">
@@ -496,7 +514,9 @@ const ElectionDetailsPage = () => {
                       </svg>
                       <span className="font-medium text-gray-900">Start Date</span>
                     </div>
-                    <p className="text-gray-800 ml-7">{formatDate(election.start_date)}</p>
+                    <p className="text-gray-800 ml-7">
+                      {election.start_date && formatDate(new Date(new Date(election.start_date).getTime() - 60 * 60 * 1000))}
+                    </p>
                   </div>
                 </div>
 
@@ -508,7 +528,9 @@ const ElectionDetailsPage = () => {
                       </svg>
                       <span className="font-medium text-gray-900">End Date</span>
                     </div>
-                    <p className="text-gray-800 ml-7">{formatDate(election.end_date)}</p>
+                    <p className="text-gray-800 ml-7">
+                      {election.end_date && formatDate(new Date(new Date(election.end_date).getTime() - 60 * 60 * 1000))}
+                    </p>
                   </div>
                 </div>
 
@@ -518,10 +540,10 @@ const ElectionDetailsPage = () => {
                     <div className="relative pt-1">
                       <div className="flex justify-between text-xs mb-1">
                         <span className="font-medium">
-                          <span className="text-green-600">Started</span> {formatDate(election.start_date).split(',')[0]}
+                          <span className="text-green-600">Started</span> {formatDate(new Date(new Date(election.start_date).getTime() - 60 * 60 * 1000)).split(',')[0]}
                         </span>
                         <span className="font-medium">
-                          <span className="text-orange-600">Ends</span> {formatDate(election.end_date).split(',')[0]}
+                          <span className="text-orange-600">Ends</span> {formatDate(new Date(new Date(election.end_date).getTime() - 60 * 60 * 1000)).split(',')[0]}
                         </span>
                       </div>
                       <div className="overflow-hidden h-2 text-xs flex rounded-full bg-gray-100">
@@ -928,7 +950,7 @@ const ElectionDetailsPage = () => {
               <div className="flex">
                 <div className="flex-shrink-0">
                   <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293-1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                   </svg>
                 </div>
                 <div className="ml-3">
@@ -955,11 +977,9 @@ const ElectionDetailsPage = () => {
           )}
           
           {/* Resend OTP button */}
-          <div className="flex justify-end">
+          <div>
             <button
-              type="button"
               onClick={handleResendOtp}
-              disabled={isResendingOtp}
               className="text-primary-600 hover:text-primary-900 text-sm font-medium focus:outline-none focus:underline flex items-center"
             >
               {isResendingOtp ? (

@@ -8,9 +8,7 @@ import secrets
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
-    confirm_password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})
-    # Removed phone_otp field as it will be handled separately
-    
+    confirm_password = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'})    
     class Meta:
         model = User
         fields = ['email', 'full_name', 'government_id', 'phone_number', 'password', 'confirm_password']
@@ -112,7 +110,6 @@ class UserDetailSerializer(serializers.ModelSerializer):
     def get_wallet_balance(self, obj):
         """Get the Ethereum wallet balance in ETH."""
         if hasattr(obj, 'ethereum_address') and obj.ethereum_address:
-            # Import here to prevent circular imports
             try:
                 from blockchain.services.ethereum_service import EthereumService
                 service = EthereumService()
@@ -151,7 +148,6 @@ class PasswordResetSerializer(serializers.Serializer):
         Validate the password strength.
         """
         try:
-            # We'll use an empty user model for validation since we don't have the actual user yet
             validate_password(value)
         except ValidationError as e:
             raise serializers.ValidationError(list(e.messages))
